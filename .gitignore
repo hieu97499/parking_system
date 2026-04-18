@@ -1,0 +1,41 @@
+# Vite cache
+.vite/
+
+# Python virtual environments
+.venv/
+.venv311/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+
+# Environment variables (chứa mật khẩu DB, JWT secret)
+.env
+.env.local
+.env.*.local
+
+# Uploads (ảnh khuôn mặt, biển số - dữ liệu thực)
+BuildWeb/backend/uploads/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+*.suo
+*.user
