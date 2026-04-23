@@ -1,28 +1,4 @@
-/**
- * esp8266_gate_bridge.ino
- *
- * ESP8266 NodeMCU / D1 Mini
- *
- * Vai trò:
- *   - I2C MASTER: giao tiếp với 2 Arduino UNO (entry 0x08, exit 0x09)
- *   - WiFi TCP CLIENT: kết nối đến Bridge server (port 4003)
- *   - Relay 2 chiều:
- *       Arduino sensor → Bridge:  "ENTRY:SENSOR:DETECTED\n", "EXIT:SENSOR:CLEAR\n" …
- *       Bridge → Arduino barrier: "ENTRY:OPEN\n", "EXIT:CLOSE\n" …
- *
- * Sơ đồ I2C:
- *   ESP8266 D2 (GPIO4 SDA) ─── Arduino A4 (SDA)
- *   ESP8266 D1 (GPIO5 SCL) ─── Arduino A5 (SCL)
- *   GND ──────────────────────── GND  (chung mass)
- *
- * Cài board trong Arduino IDE:
- *   URL: http://arduino.esp8266.com/stable/package_esp8266com_index.json
- *   Board: "NodeMCU 1.0 (ESP-12E Module)" hoặc "LOLIN(WEMOS) D1 mini"
- *
- * Thư viện cần:
- *   - ESP8266WiFi (có sẵn khi cài board ESP8266)
- *   - Wire (có sẵn)
- */
+
 
 #include <Arduino.h>
 #include <Wire.h>
