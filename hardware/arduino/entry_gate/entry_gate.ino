@@ -1,22 +1,3 @@
-/**
- * ENTRY GATE CONTROLLER – I2C Slave v2
- * Hardware: Arduino Uno
- *   - HYSRF05 ultrasonic sensor (Trig: D9, Echo: D10)
- *   - Servo motor barrier (Signal: D6)
- *   - I2C SDA = A4, SCL = A5  (cắm vào ESP8266 D2/D1)
- *
- * I2C address: 0x08
- *
- * Giao thức I2C:
- *   READ  – ESP8266 yêu cầu 1 byte trạng thái:
- *     bit0 = sensor đang phát hiện xe
- *     bit1 = barrier đang mở
- *     bit2 = firmware sẵn sàng (luôn = 1)
- *   WRITE – ESP8266 gửi 1 byte lệnh:
- *     0x01 = OPEN barrier
- *     0x02 = CLOSE barrier
- *     0x00 = PING
- */
 
 #include <Wire.h>
 #include <Servo.h>
