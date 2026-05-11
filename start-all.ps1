@@ -21,7 +21,7 @@ function Wait-Port {
 }
 
 Write-Host "=== Dung tien trinh cu ===" -ForegroundColor DarkCyan
-Get-NetTCPConnection -LocalPort 4000,4002,5001,3000,5174,5175 -State Listen -ErrorAction SilentlyContinue |
+Get-NetTCPConnection -LocalPort 4000,4002,5001,3000,5175 -State Listen -ErrorAction SilentlyContinue |
     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 1
 
@@ -45,11 +45,6 @@ Write-Host "=== Admin Web (port 3000) ===" -ForegroundColor Cyan
 Start-Process "cmd.exe" -ArgumentList "/c npm run dev > $LOGS\admin_web.log 2>&1" -WorkingDirectory "$ROOT\BuildWeb\admin-web" -WindowStyle Minimized
 Wait-Port -Port 3000 -Label "Admin Web" -TimeoutSec 30 | Out-Null
 
-# ── WebThietBi (port 5174) ─────────────────────────────────────────────────
-Write-Host "=== WebThietBi (port 5174) ===" -ForegroundColor Cyan
-Start-Process "cmd.exe" -ArgumentList "/c npm run dev > $LOGS\web_thietbi.log 2>&1" -WorkingDirectory "$ROOT\WebThietBi" -WindowStyle Minimized
-Wait-Port -Port 5174 -Label "WebThietBi" -TimeoutSec 30 | Out-Null
-
 # ── WebApp (port 5175) ────────────────────────────────────────────────────
 Write-Host "=== WebApp (port 5175) ===" -ForegroundColor Cyan
 Start-Process "cmd.exe" -ArgumentList "/c npm run dev > $LOGS\webapp.log 2>&1" -WorkingDirectory "$ROOT\WebApp" -WindowStyle Minimized
@@ -62,7 +57,6 @@ Write-Host "  Backend     : http://localhost:4000"
 Write-Host "  AI Service  : http://localhost:5001"
 Write-Host "  Bridge WS   : ws://localhost:4002"
 Write-Host "  Admin Web   : http://localhost:3000"
-Write-Host "  WebThietBi  : http://localhost:5174"
 Write-Host "  WebApp      : http://localhost:5175"
 Write-Host "  Logs        : $LOGS"
 Write-Host "============================================" -ForegroundColor Green
