@@ -62,7 +62,7 @@ function DeviceListPanel({ lane, devices, loading }) {
               <div className="min-w-0">
                 <div className="text-[11px] font-medium text-gray-700 truncate">{d.device_name}</div>
                 <div className="text-[10px] text-gray-400">
-                  {d.device_type}{d.serial_port ? ` · ${d.serial_port}` : ""}
+                  {d.device_type}{d.device_type === "arduino" ? " · qua ESP8266" : ""}
                   {d.last_heartbeat && (
                     <span className="ml-1">· <Clock size={8} className="inline mb-0.5" /> {new Date(d.last_heartbeat).toLocaleTimeString("vi-VN")}</span>
                   )}
@@ -348,13 +348,28 @@ function GateColumn({ gate, assignment, dispatchRef, onSend }) {
 function CameraBox({ camIndex, label, accent, resultType, result, fullscreen, onToggleFullscreen }) {
   const [online, setOnline] = useState(false)
   const [retryKey, setRetryKey] = useState(0)
+  const imgRef = useRef(null)
   const ac = accentCfg[accent]
 
+  // Retry khi offline
   useEffect(() => {
     if (online) return
     const t = setTimeout(() => setRetryKey(k => k + 1), 4000)
     return () => clearTimeout(t)
   }, [online, retryKey])
+
+  // Poll naturalWidth để phát hiện stream MJPEG đang hiển thị
+  useEffect(() => {
+    setOnline(false)
+    const t = setInterval(() => {
+      const img = imgRef.current
+      if (img && img.naturalWidth > 0) {
+        setOnline(true)
+        clearInterval(t)
+      }
+    }, 300)
+    return () => clearInterval(t)
+  }, [retryKey])
 
   function Overlay() {
     if (!result) return null
@@ -417,15 +432,14 @@ function CameraBox({ camIndex, label, accent, resultType, result, fullscreen, on
       <div className="flex-1 relative min-h-0 bg-gray-950">
         {}
         <img
+          ref={imgRef}
           key={retryKey}
           src={`${AI_URL}/stream/${camIndex}`}
           alt={label}
           className="w-full h-full object-cover"
-          onLoadStart={() => setOnline(true)}
-          onError={() => { setOnline(false); }}
         />
         {!online && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+          <div className="absolute inset-0 bg-gray-950 flex flex-col items-center justify-center gap-3">
             <Loader2 size={26} className="text-slate-600 animate-spin" />
             <span className="text-slate-500 text-sm">Đang kết nối cam {camIndex}…</span>
           </div>

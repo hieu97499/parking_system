@@ -179,4 +179,152 @@ router.patch('/profile', userAuth, async (req, res, next) => {
   }
 });
 
+/**
+ * POST /api/user/auth/setup
+ * Hoàn tất thiết lập tài khoản sau đăng ký:
+ *   - Upload 5 ảnh khuôn mặt theo góc
+ *   - Đăng ký xe + ảnh biển số
+ *   - Gọi AI service reload faces
+ */
+const path = require('path');
+const fs   = require('fs');
+const axios = require('axios');
+
+const UPLOADS_ROOT_AUTH = path.join(__dirname, '..', '..', '..', 'uploads');
+const VALID_ANGLES_AUTH  = ['front', 'left', 'right', 'up', 'down'];
+const ANGLE_LABELS_AUTH  = {
+  front: 'Chính diện', left: 'Nghiêng trái', right: 'Nghiêng phải',
+  up: 'Ngước lên', down: 'Cúi xuống',
+};
+
+router.post('/setup', userAuth, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const {
+      face_images,       // { front: 'data:image/...', left: '...', ... }
+      license_plate,     // '29B1-12345'
+      plate_image_data,  // 'data:image/jpeg;base64,...' (tuỳ chọn)
+      vehicle_nickname,  // 'Xe đi làm' (tuỳ chọn)
+    } = req.body;
+
+    const userId = req.user.id;
+    const errors = [];
+
+    await client.query('BEGIN');
+
+    // ── 1. Lưu ảnh khuôn mặt theo từng góc ──
+    if (face_images && typeof face_images === 'object') {
+      const faceDir = path.join(UPLOADS_ROOT_AUTH, 'faces', userId);
+      fs.mkdirSync(faceDir, { recursive: true });
+
+      for (const angle of VALID_ANGLES_AUTH) {
+        const imageData = face_images[angle];
+        if (!imageData) continue;
+
+        const matches = imageData.match(/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/);
+        if (!matches) {
+          errors.push(`Ảnh góc ${angle}: định dạng không hợp lệ`);
+          continue;
+        }
+
+        const ext    = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+        const buffer = Buffer.from(matches[2], 'base64');
+
+        if (buffer.length > 5 * 1024 * 1024) {
+          errors.push(`Ảnh góc ${angle}: quá lớn (tối đa 5MB)`);
+          continue;
+        }
+
+        const filename     = `${angle}.${ext}`;
+        const fullPath     = path.join(faceDir, filename);
+        const relativePath = `faces/${userId}/${filename}`;
+        fs.writeFileSync(fullPath, buffer);
+
+        // Upsert vào DB
+        await client.query(
+          `INSERT INTO user_face_images (user_id, image_path, angle, status)
+           VALUES ($1, $2, $3, 'pending')
+           ON CONFLICT (user_id, angle)
+           DO UPDATE SET image_path = $2, status = 'pending',
+                         embedding_id = NULL, updated_at = NOW()`,
+          [userId, relativePath, angle]
+        );
+      }
+    }
+
+    // ── 2. Đăng ký xe ──
+    let vehicleResult = null;
+    if (license_plate) {
+      const normalized = license_plate.trim().toUpperCase().replace(/\s+/g, '');
+
+      // Kiểm tra biển số trùng
+      const dupCheck = await client.query(
+        'SELECT vehicle_id FROM vehicles WHERE license_plate = $1',
+        [normalized]
+      );
+      if (dupCheck.rows.length > 0) {
+        errors.push(`Biển số ${normalized} đã được đăng ký trong hệ thống`);
+      } else {
+        const vRes = await client.query(
+          `INSERT INTO vehicles (user_id, license_plate, nickname)
+           VALUES ($1, $2, $3)
+           RETURNING vehicle_id AS id, license_plate, nickname, is_active`,
+          [userId, normalized, vehicle_nickname || null]
+        );
+        vehicleResult = vRes.rows[0];
+
+        // Upload ảnh biển số nếu có
+        if (plate_image_data && vehicleResult) {
+          const pm = plate_image_data.match(/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/);
+          if (pm) {
+            const ext    = pm[1] === 'jpeg' ? 'jpg' : pm[1];
+            const buffer = Buffer.from(pm[2], 'base64');
+            const plateDir     = path.join(UPLOADS_ROOT_AUTH, 'plates', userId);
+            fs.mkdirSync(plateDir, { recursive: true });
+            const filename     = `${vehicleResult.id}-${Date.now()}.${ext}`;
+            const fullPath     = path.join(plateDir, filename);
+            const relativePath = `plates/${userId}/${filename}`;
+            fs.writeFileSync(fullPath, buffer);
+
+            await client.query(
+              `UPDATE vehicles SET plate_image_path = $1, updated_at = NOW()
+               WHERE vehicle_id = $2`,
+              [relativePath, vehicleResult.id]
+            );
+            vehicleResult.plate_image_path = relativePath;
+          }
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+
+    // ── 3. Gọi AI service reload faces (async, không block response) ──
+    const AI_URL = process.env.AI_SERVICE_URL || 'http://localhost:5001';
+    axios.post(`${AI_URL}/faces/reload`).catch(err =>
+      console.warn('[Setup] AI reload failed (non-critical):', err.message)
+    );
+
+    // ── 4. Kiểm tra số góc đã upload ──
+    const faceCount = await pool.query(
+      'SELECT COUNT(*) FROM user_face_images WHERE user_id = $1',
+      [userId]
+    );
+    const faceUploaded = parseInt(faceCount.rows[0].count);
+
+    res.json({
+      message: 'Thiết lập tài khoản thành công',
+      face_images_uploaded: faceUploaded,
+      face_complete: faceUploaded >= 5,
+      vehicle: vehicleResult,
+      warnings: errors.length > 0 ? errors : undefined,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;

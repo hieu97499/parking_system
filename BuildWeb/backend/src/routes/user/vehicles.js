@@ -44,12 +44,29 @@ router.post('/', userAuth, async (req, res, next) => {
 
 router.put('/:id', userAuth, async (req, res, next) => {
   try {
-    const { nickname } = req.body;
+    const { nickname, license_plate } = req.body;
+    const updates = [`nickname = $1`, `updated_at = NOW()`];
+    const params = [nickname || null, req.params.id, req.user.id];
+
+    if (license_plate !== undefined) {
+      const normalized = license_plate.trim().toUpperCase().replace(/\s+/g, '');
+      if (!normalized) return res.status(400).json({ error: 'Biển số xe không được để trống' });
+      const existing = await pool.query(
+        'SELECT vehicle_id FROM vehicles WHERE license_plate = $1 AND vehicle_id != $2',
+        [normalized, req.params.id]
+      );
+      if (existing.rows.length > 0) {
+        return res.status(409).json({ error: 'Biển số xe đã được đăng ký trong hệ thống' });
+      }
+      updates.push(`license_plate = $${params.length + 1}`);
+      params.push(normalized);
+    }
+
     const result = await pool.query(
-      `UPDATE vehicles SET nickname = $1, updated_at = NOW()
+      `UPDATE vehicles SET ${updates.join(', ')}
        WHERE vehicle_id = $2 AND user_id = $3
        RETURNING vehicle_id AS id, license_plate, nickname, is_active`,
-      [nickname || null, req.params.id, req.user.id]
+      params
     );
     if (!result.rows[0]) return res.status(404).json({ error: 'Không tìm thấy xe' });
     res.json(result.rows[0]);

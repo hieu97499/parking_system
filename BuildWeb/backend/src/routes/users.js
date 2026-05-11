@@ -133,6 +133,24 @@ router.get('/:id/face-images', auth, async (req, res, next) => {
   }
 });
 
+router.delete('/:id/face-images/:imageId', auth, async (req, res, next) => {
+  try {
+    const imgRes = await pool.query(
+      'SELECT image_id, embedding_id FROM user_face_images WHERE image_id = $1 AND user_id = $2',
+      [req.params.imageId, req.params.id]
+    );
+    if (!imgRes.rows[0]) return res.status(404).json({ error: 'Không tìm thấy ảnh' });
+    const { embedding_id } = imgRes.rows[0];
+    await pool.query('DELETE FROM user_face_images WHERE image_id = $1', [req.params.imageId]);
+    if (embedding_id) {
+      await pool.query('UPDATE face_embeddings SET is_active = false WHERE embedding_id = $1', [embedding_id]);
+    }
+    res.json({ message: 'Đã xóa ảnh khuôn mặt' });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.patch('/:id/toggle-active', auth, async (req, res, next) => {
   try {
     const result = await pool.query(`
@@ -141,6 +159,82 @@ router.patch('/:id/toggle-active', auth, async (req, res, next) => {
     `, [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: 'Không tìm thấy người dùng' });
     res.json(result.rows[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Admin: update a user's vehicle
+router.put('/:id/vehicles/:vid', auth, async (req, res, next) => {
+  try {
+    const { license_plate, nickname } = req.body;
+    const updates = ['updated_at = NOW()'];
+    const params = [];
+
+    if (license_plate !== undefined) {
+      const normalized = license_plate.trim().toUpperCase().replace(/\s+/g, '');
+      if (!normalized) return res.status(400).json({ error: 'Biển số xe không được để trống' });
+      const existing = await pool.query(
+        'SELECT vehicle_id FROM vehicles WHERE license_plate = $1 AND vehicle_id != $2',
+        [normalized, req.params.vid]
+      );
+      if (existing.rows.length > 0) {
+        return res.status(409).json({ error: 'Biển số xe đã được đăng ký trong hệ thống' });
+      }
+      params.push(normalized);
+      updates.push(`license_plate = $${params.length}`);
+    }
+    if (nickname !== undefined) {
+      params.push(nickname || null);
+      updates.push(`nickname = $${params.length}`);
+    }
+
+    params.push(req.params.vid, req.params.id);
+    const result = await pool.query(
+      `UPDATE vehicles SET ${updates.join(', ')}
+       WHERE vehicle_id = $${params.length - 1} AND user_id = $${params.length}
+       RETURNING vehicle_id AS id, license_plate, nickname, is_active`,
+      params
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: 'Không tìm thấy xe' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Admin: adjust user wallet balance
+router.post('/:id/wallet/adjust', auth, async (req, res, next) => {
+  try {
+    const { amount, description } = req.body;
+    if (!amount || typeof amount !== 'number') {
+      return res.status(400).json({ error: 'Số tiền không hợp lệ' });
+    }
+
+    const walletRes = await pool.query(
+      'SELECT wallet_id, balance FROM wallets WHERE user_id = $1',
+      [req.params.id]
+    );
+    if (!walletRes.rows[0]) return res.status(404).json({ error: 'Không tìm thấy ví' });
+
+    const wallet = walletRes.rows[0];
+    const newBalance = parseFloat(wallet.balance) + amount;
+    if (newBalance < 0) return res.status(400).json({ error: 'Số dư ví không đủ để trừ' });
+
+    const txType = amount >= 0 ? 'topup' : 'deduct';
+    const absAmount = Math.abs(amount);
+
+    await pool.query(
+      'UPDATE wallets SET balance = $1 WHERE wallet_id = $2',
+      [newBalance, wallet.wallet_id]
+    );
+    await pool.query(
+      `INSERT INTO wallet_transactions (wallet_id, transaction_type, amount, description)
+       VALUES ($1, $2, $3, $4)`,
+      [wallet.wallet_id, txType, absAmount, description || (amount >= 0 ? 'Quản trị nạp tiền' : 'Quản trị trừ tiền')]
+    );
+
+    res.json({ wallet_balance: newBalance, amount, transaction_type: txType });
   } catch (err) {
     next(err);
   }

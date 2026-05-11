@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { usersApi } from '../api/services'
 import {
   Search, X, User, Wallet, Car, Clock,
-  ChevronDown, ChevronUp, Edit2, Save, AlertCircle, CheckCircle, ScanFace
+  ChevronDown, ChevronUp, Edit2, Save, AlertCircle, CheckCircle, ScanFace, Check, Pencil, PlusCircle, MinusCircle
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -45,6 +45,17 @@ export default function Users() {
   const [faceLoading, setFaceLoading]   = useState(false)
   const [previewImg, setPreviewImg]     = useState(null)
 
+  // Vehicle editing state (admin)
+  const [editVehicleId, setEditVehicleId] = useState(null)
+  const [vehicleEditForm, setVehicleEditForm] = useState({ license_plate: '', nickname: '' })
+  const [vehicleSaving, setVehicleSaving] = useState(false)
+
+  // Wallet adjust state
+  const [walletAdjust, setWalletAdjust] = useState(false)
+  const [walletAmount, setWalletAmount] = useState('')
+  const [walletDesc, setWalletDesc]     = useState('')
+  const [walletSaving, setWalletSaving] = useState(false)
+
   const loadUsers = useCallback(async () => {
     setLoading(true)
     try {
@@ -75,6 +86,8 @@ export default function Users() {
     setEditing(false)
     setDetailTab('info')
     setFaceImages([])
+    setEditVehicleId(null)
+    setWalletAdjust(false)
     try {
       const data = await usersApi.get(user.id)
       setDetail(data)
@@ -123,6 +136,47 @@ export default function Users() {
       setToast({ msg: updated.is_active ? 'Đã kích hoạt tài khoản' : 'Đã vô hiệu hóa tài khoản', type: 'success' })
     } catch (e) {
       setToast({ msg: e.message, type: 'error' })
+    }
+  }
+
+  const startEditVehicle = (v) => {
+    setEditVehicleId(v.id)
+    setVehicleEditForm({ license_plate: v.license_plate, nickname: v.nickname || '' })
+  }
+
+  const saveVehicle = async (vid) => {
+    setVehicleSaving(true)
+    try {
+      const updated = await usersApi.updateVehicle(detail.id || detail.user_id, vid, vehicleEditForm)
+      setDetail(prev => ({
+        ...prev,
+        vehicles: prev.vehicles.map(v => v.id === vid ? { ...v, ...updated } : v)
+      }))
+      setEditVehicleId(null)
+      setToast({ msg: 'Đã cập nhật thông tin xe', type: 'success' })
+    } catch (e) {
+      setToast({ msg: e.message, type: 'error' })
+    } finally {
+      setVehicleSaving(false)
+    }
+  }
+
+  const submitWalletAdjust = async () => {
+    const amt = parseFloat(walletAmount)
+    if (isNaN(amt) || amt === 0) { setToast({ msg: 'Nhập số tiền hợp lệ (khác 0)', type: 'error' }); return }
+    setWalletSaving(true)
+    try {
+      const result = await usersApi.adjustWallet(detail.id || detail.user_id, amt, walletDesc)
+      setDetail(prev => ({ ...prev, wallet_balance: result.wallet_balance }))
+      setUsers(prev => prev.map(u => u.id === (detail.id || detail.user_id) ? { ...u, wallet_balance: result.wallet_balance } : u))
+      setWalletAdjust(false)
+      setWalletAmount('')
+      setWalletDesc('')
+      setToast({ msg: `Đã ${amt >= 0 ? 'nạp' : 'trừ'} ${Math.abs(amt).toLocaleString('vi-VN')}đ`, type: 'success' })
+    } catch (e) {
+      setToast({ msg: e.message, type: 'error' })
+    } finally {
+      setWalletSaving(false)
     }
   }
 
@@ -218,12 +272,20 @@ export default function Users() {
                 <p className="text-sm text-gray-500 font-mono">{detail.phone_number}</p>
               </div>
               <StatusBadge active={detail.is_active} />
-              {!editing && (
+              {detailTab === 'info' && !editing && (
                 <button
                   onClick={startEdit}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50"
                 >
                   <Edit2 size={14} /> Sửa
+                </button>
+              )}
+              {detailTab === 'info' && editing && (
+                <button
+                  onClick={() => setEditing(false)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50"
+                >
+                  <X size={14} /> Hủy
                 </button>
               )}
               <button onClick={() => setDetail(null)} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
@@ -271,19 +333,58 @@ export default function Users() {
                     <InfoRow label="Trạng thái"    value={<StatusBadge active={detail.is_active} />} />
                     <InfoRow label="Xe đăng ký"    value={`${detail.vehicles?.length ?? 0} xe`} />
                   </div>
-                  <div className="pt-2">
-                    <button
-                      onClick={() => toggleActive(detail.id || detail.user_id)}
-                      className={clsx(
-                        'px-4 py-2 text-sm font-medium rounded-lg border transition-colors',
-                        detail.is_active
-                          ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200'
-                          : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200'
-                      )}
-                    >
-                      {detail.is_active ? 'Vô hiệu hóa tài khoản' : 'Kích hoạt tài khoản'}
-                    </button>
-                  </div>
+                  {/* Wallet adjustment */}
+                  {!walletAdjust ? (
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        onClick={() => { setWalletAdjust(true); setWalletAmount(''); setWalletDesc(''); }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-50"
+                      >
+                        <PlusCircle size={14} /> Điều chỉnh ví
+                      </button>
+                      <button
+                        onClick={() => toggleActive(detail.id || detail.user_id)}
+                        className={clsx(
+                          'px-4 py-2 text-sm font-medium rounded-lg border transition-colors',
+                          detail.is_active
+                            ? 'bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200'
+                            : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200'
+                        )}
+                      >
+                        {detail.is_active ? 'Vô hiệu hóa tài khoản' : 'Kích hoạt tài khoản'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                      <p className="text-xs font-medium text-gray-500">Điều chỉnh số dư ví (+ nạp, − trừ)</p>
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          placeholder="Số tiền (VD: 50000 hoặc -20000)"
+                          value={walletAmount}
+                          onChange={e => setWalletAmount(e.target.value)}
+                          className="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Ghi chú (tuỳ chọn)"
+                        value={walletDesc}
+                        onChange={e => setWalletDesc(e.target.value)}
+                        className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          onClick={submitWalletAdjust}
+                          disabled={walletSaving}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-60"
+                        >
+                          <Save size={13} />{walletSaving ? 'Đang lưu...' : 'Xác nhận'}
+                        </button>
+                        <button onClick={() => setWalletAdjust(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Hủy</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -339,20 +440,73 @@ export default function Users() {
               {detailTab === 'vehicles' && (
                 <div className="space-y-2">
                   {(detail.vehicles ?? []).map(v => (
-                    <div key={v.id} className="bg-gray-50 rounded-lg p-3 space-y-2">
+                    <div key={v.id} className="bg-gray-50 rounded-lg p-3 space-y-2 border border-transparent" style={editVehicleId === v.id ? { borderColor: '#3b82f6' } : {}}>
+                      {/* Always-visible vehicle row */}
                       <div className="flex items-center gap-4">
                         <Car size={18} className="text-blue-500 shrink-0" />
-                        <div className="flex-1">
+                        <div className="flex-1 min-w-0">
                           <div className="font-mono font-bold text-gray-800">{v.license_plate}</div>
                           <div className="text-xs text-gray-500">{v.nickname || '—'}</div>
                         </div>
                         <span className={clsx(
-                          'text-xs px-2 py-0.5 rounded-full font-medium',
+                          'text-xs px-2 py-0.5 rounded-full font-medium shrink-0',
                           v.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-200 text-gray-500'
                         )}>
                           {v.is_active ? 'Hoạt động' : 'Vô hiệu'}
                         </span>
+                        {editVehicleId === v.id ? (
+                          <button
+                            onClick={() => setEditVehicleId(null)}
+                            className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded shrink-0"
+                            title="Hủy sửa"
+                          >
+                            <X size={14} />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => startEditVehicle(v)}
+                            className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded shrink-0"
+                            title="Sửa thông tin xe"
+                          >
+                            <Pencil size={14} />
+                          </button>
+                        )}
                       </div>
+
+                      {/* Inline edit form — expands below when active */}
+                      {editVehicleId === v.id && (
+                        <div className="pt-1 space-y-2 border-t border-blue-100 mt-1">
+                          <div>
+                            <label className="block text-xs font-medium text-gray-500 mb-1">Biển số xe</label>
+                            <input
+                              autoFocus
+                              className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              value={vehicleEditForm.license_plate}
+                              onChange={e => setVehicleEditForm(f => ({ ...f, license_plate: e.target.value }))}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-500 mb-1">Tên gợi nhớ</label>
+                            <input
+                              className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              value={vehicleEditForm.nickname}
+                              onChange={e => setVehicleEditForm(f => ({ ...f, nickname: e.target.value }))}
+                            />
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => saveVehicle(v.id)}
+                              disabled={vehicleSaving}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                            >
+                              <Check size={13} />{vehicleSaving ? 'Đang lưu...' : 'Lưu'}
+                            </button>
+                            <button onClick={() => setEditVehicleId(null)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Hủy</button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Plate image */}
                       {v.plate_image_path ? (
                         <div
                           className="rounded-lg overflow-hidden bg-gray-200 cursor-pointer"
@@ -441,20 +595,36 @@ export default function Users() {
                     <p className="text-center text-gray-400 py-8">Người dùng chưa đăng ký ảnh khuôn mặt</p>
                   ) : (
                     <>
-                      <p className="text-xs text-gray-400 mb-3">{faceImages.length} ảnh – click ảnh để phóng to</p>
+                      <p className="text-xs text-gray-400 mb-3">{faceImages.length} ảnh – click ảnh để phóng to, nhấn X để xóa</p>
                       <div className="grid grid-cols-3 gap-3">
                         {faceImages.map(img => (
                           <div
                             key={img.image_id}
-                            className="relative rounded-xl overflow-hidden bg-gray-100 aspect-square cursor-pointer group"
-                            onClick={() => setPreviewImg(`/uploads/${img.image_path}`)}
+                            className="relative rounded-xl overflow-hidden bg-gray-100 aspect-square group"
                           >
                             <img
                               src={`/uploads/${img.image_path}`}
                               alt="face"
-                              className="w-full h-full object-cover group-hover:opacity-90 transition-opacity"
+                              className="w-full h-full object-cover cursor-pointer group-hover:opacity-80 transition-opacity"
+                              onClick={() => setPreviewImg(`/uploads/${img.image_path}`)}
                             />
-                            <div className="absolute bottom-0 inset-x-0 bg-black/40 px-1.5 py-1">
+                            <button
+                              onClick={async () => {
+                                if (!confirm('Xóa ảnh khuôn mặt này?')) return
+                                try {
+                                  await usersApi.deleteFaceImage(detail.id || detail.user_id, img.image_id)
+                                  setFaceImages(prev => prev.filter(f => f.image_id !== img.image_id))
+                                  setToast({ msg: 'Đã xóa ảnh', type: 'success' })
+                                } catch (e) {
+                                  setToast({ msg: e.message, type: 'error' })
+                                }
+                              }}
+                              className="absolute top-1 right-1 w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700 z-10"
+                              title="Xóa ảnh"
+                            >
+                              <X size={12} />
+                            </button>
+                            <div className="absolute bottom-0 inset-x-0 bg-black/40 px-1.5 py-1 pointer-events-none">
                               <span className={clsx(
                                 'text-[10px] font-semibold',
                                 img.status === 'processed'    ? 'text-green-300'

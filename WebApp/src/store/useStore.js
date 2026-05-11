@@ -149,4 +149,10 @@ export const useStore = create((set, get) => ({
     }));
   },
 
+  async addAuthorization(data) {
+    const newAuth = await authorizationsApi.create(data);
+    set(state => ({ authorizations: [newAuth, ...state.authorizations] }));
+    return newAuth;
+  },
+
 }));

@@ -8,7 +8,7 @@ export default function Vehicles() {
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState({ license_plate: '', nickname: '' });
-  const [editNickname, setEditNickname] = useState('');
+  const [editForm, setEditForm] = useState({ license_plate: '', nickname: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -35,7 +35,7 @@ export default function Vehicles() {
   async function handleUpdate(id) {
     setLoading(true);
     try {
-      await updateVehicle(id, { nickname: editNickname });
+      await updateVehicle(id, { nickname: editForm.nickname, license_plate: editForm.license_plate });
       setEditId(null);
     } catch (err) { setError(err.message); }
     finally { setLoading(false); }
@@ -182,20 +182,28 @@ export default function Vehicles() {
                 <div className="flex-1 min-w-0">
                   <p className="font-bold text-slate-800">{v.license_plate}</p>
                   {editId === v.id ? (
-                    <div className="flex items-center gap-1 mt-1">
+                    <div className="flex flex-col gap-1 mt-1">
                       <input
-                        className="input-field py-1 text-sm"
-                        value={editNickname}
-                        onChange={e => setEditNickname(e.target.value)}
-                        placeholder="Tên gợi nhớ"
+                        className="input-field py-1 text-sm uppercase"
+                        value={editForm.license_plate}
+                        onChange={e => setEditForm(f => ({ ...f, license_plate: e.target.value }))}
+                        placeholder="Biển số xe"
                         autoFocus
                       />
-                      <button onClick={() => handleUpdate(v.id)} className="p-1 text-green-600 hover:bg-green-50 rounded">
-                        <Check size={16} />
-                      </button>
-                      <button onClick={() => setEditId(null)} className="p-1 text-slate-400 hover:bg-slate-50 rounded">
-                        <X size={16} />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <input
+                          className="input-field py-1 text-sm flex-1"
+                          value={editForm.nickname}
+                          onChange={e => setEditForm(f => ({ ...f, nickname: e.target.value }))}
+                          placeholder="Tên gợi nhớ"
+                        />
+                        <button onClick={() => handleUpdate(v.id)} className="p-1 text-green-600 hover:bg-green-50 rounded">
+                          <Check size={16} />
+                        </button>
+                        <button onClick={() => setEditId(null)} className="p-1 text-slate-400 hover:bg-slate-50 rounded">
+                          <X size={16} />
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <p className="text-sm text-slate-400">{v.nickname || 'Chưa đặt tên'}</p>
@@ -204,7 +212,7 @@ export default function Vehicles() {
                 {editId !== v.id && (
                   <div className="flex gap-1 flex-shrink-0">
                     <button
-                      onClick={() => { setEditId(v.id); setEditNickname(v.nickname || ''); }}
+                      onClick={() => { setEditId(v.id); setEditForm({ license_plate: v.license_plate, nickname: v.nickname || '' }); }}
                       className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
                     >
                       <Pencil size={16} />

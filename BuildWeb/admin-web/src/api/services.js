@@ -30,6 +30,9 @@ export const usersApi = {
   update: (id, data) => api.put(`/users/${id}`, data),
   toggleActive: (id) => api.patch(`/users/${id}/toggle-active`),
   faceImages: (id) => api.get(`/users/${id}/face-images`),
+  updateVehicle: (userId, vehicleId, data) => api.put(`/users/${userId}/vehicles/${vehicleId}`, data),
+  adjustWallet: (userId, amount, description) => api.post(`/users/${userId}/wallet/adjust`, { amount, description }),
+  deleteFaceImage: (userId, imageId) => api.delete(`/users/${userId}/face-images/${imageId}`),
 };
 
 export const devicesApi = {

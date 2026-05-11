@@ -2,7 +2,15 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../store/useStore';
 import { authApi, faceImagesApi } from '../api/services';
-import { User, Phone, Lock, LogOut, ChevronRight, Eye, EyeOff, Camera, Trash2, ScanFace, X } from 'lucide-react';
+import { User, Phone, Lock, LogOut, ChevronRight, Eye, EyeOff, Camera, Trash2, ScanFace, X, Check, AlertCircle, Upload } from 'lucide-react';
+
+const FACE_ANGLES = [
+  { key: 'front', label: 'Chính diện',   guide: 'Nhìn thẳng vào camera' },
+  { key: 'left',  label: 'Nghiêng trái', guide: 'Xoay mặt sang trái ~30°' },
+  { key: 'right', label: 'Nghiêng phải', guide: 'Xoay mặt sang phải ~30°' },
+  { key: 'up',    label: 'Ngước lên',    guide: 'Ngước đầu nhẹ lên trên' },
+  { key: 'down',  label: 'Cúi xuống',    guide: 'Cúi đầu nhẹ xuống dưới' },
+];
 
 export default function Profile() {
   const navigate = useNavigate();
@@ -17,12 +25,14 @@ export default function Profile() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  const [faceImages, setFaceImages]       = useState([]);
+  const [faceImages, setFaceImages]       = useState({});  // { front: {...}, left: {...}, ... }
+  const [angleStatus, setAngleStatus]     = useState({});
   const [faceLoading, setFaceLoading]     = useState(false);
   const [faceError, setFaceError]         = useState('');
-  const [faceUploading, setFaceUploading] = useState(false);
+  const [uploadingAngle, setUploadingAngle] = useState(null);
   const [showFace, setShowFace]           = useState(false);
   const [previewImg, setPreviewImg]       = useState(null);
+  const [activeAngle, setActiveAngle]     = useState('front');
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -35,7 +45,13 @@ export default function Profile() {
     setFaceError('');
     try {
       const data = await faceImagesApi.list();
-      setFaceImages(Array.isArray(data) ? data : []);
+      // data = { images: [...], angle_status: { front: {...}, ... } }
+      const byAngle = {};
+      if (data?.images) {
+        data.images.forEach(img => { if (img.angle) byAngle[img.angle] = img; });
+      }
+      setFaceImages(byAngle);
+      setAngleStatus(data?.angle_status || {});
     } catch (err) {
       setFaceError(err.message);
     } finally {
@@ -59,16 +75,19 @@ export default function Profile() {
     }
 
     setFaceError('');
-    setFaceUploading(true);
+    setUploadingAngle(activeAngle);
     try {
       const imageData = await readFileAsBase64(file);
-      const newImg = await faceImagesApi.upload(imageData);
-      setFaceImages(prev => [newImg, ...prev]);
-      setMessage('Tải ảnh khuôn mặt thành công. Đang chờ hệ thống AI xử lý...');
+      const newImg = await faceImagesApi.upload(imageData, activeAngle);
+      setFaceImages(prev => ({ ...prev, [activeAngle]: newImg }));
+      setMessage(`Tải ảnh góc "${FACE_ANGLES.find(a=>a.key===activeAngle)?.label}" thành công!`);
+      // Tự chuyển sang góc tiếp theo chưa có ảnh
+      const nextMissing = FACE_ANGLES.find(a => a.key !== activeAngle && !faceImages[a.key]);
+      if (nextMissing) setActiveAngle(nextMissing.key);
     } catch (err) {
       setFaceError(err.message);
     } finally {
-      setFaceUploading(false);
+      setUploadingAngle(null);
     }
   }
 
@@ -81,11 +100,11 @@ export default function Profile() {
     });
   }
 
-  async function handleDeleteFaceImage(imageId) {
-    if (!confirm('Xóa ảnh khuôn mặt này?')) return;
+  async function handleDeleteFaceImage(angle, imageId) {
+    if (!confirm(`Xóa ảnh góc "${FACE_ANGLES.find(a=>a.key===angle)?.label}"?`)) return;
     try {
       await faceImagesApi.remove(imageId);
-      setFaceImages(prev => prev.filter(img => img.image_id !== imageId));
+      setFaceImages(prev => { const n = {...prev}; delete n[angle]; return n; });
     } catch (err) {
       setFaceError(err.message);
     }
@@ -231,25 +250,26 @@ export default function Profile() {
         )}
       </div>
 
-      {}
+      {/* Ảnh khuôn mặt – 5 góc */}
       <div className="card">
-        <div
-          className="flex items-center justify-between cursor-pointer"
-          onClick={() => { setShowFace(v => !v); setFaceError(''); }}
-        >
+        <div className="flex items-center justify-between cursor-pointer"
+          onClick={() => { setShowFace(v => !v); setFaceError(''); if (!showFace) loadFaceImages(); }}>
           <div className="flex items-center gap-2">
             <ScanFace size={18} className="text-slate-400" />
             <div>
-              <p className="text-sm font-medium text-slate-700">Ảnh khuôn mặt</p>
-              <p className="text-xs text-slate-400">Dùng để nhận diện khi lấy xe</p>
+              <p className="text-sm font-medium text-slate-700">Ảnh khuôn mặt (5 góc)</p>
+              <p className="text-xs text-slate-400">Dùng để nhận diện khi vào/ra bãi</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {faceImages.length > 0 && (
-              <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full font-medium">
-                {faceImages.length}/5
-              </span>
-            )}
+            {(() => {
+              const done = Object.keys(faceImages).length;
+              return done > 0 ? (
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                  done >= 5 ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-600'
+                }`}>{done}/5 góc</span>
+              ) : null;
+            })()}
             <ChevronRight size={16} className={`text-slate-300 transition-transform ${showFace ? 'rotate-90' : ''}`} />
           </div>
         </div>
@@ -257,71 +277,96 @@ export default function Profile() {
         {showFace && (
           <div className="mt-4 space-y-3">
             {faceError && (
-              <div className="p-2 bg-red-50 border border-red-200 rounded-lg text-red-600 text-xs">{faceError}</div>
+              <div className="p-2 bg-red-50 border border-red-200 rounded-lg text-red-600 text-xs flex gap-1.5">
+                <AlertCircle size={14} className="shrink-0 mt-0.5" />{faceError}
+              </div>
             )}
 
-            {}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              className="hidden"
-              onChange={handleFaceUpload}
-            />
+            {/* Progress tổng quát */}
+            {!faceLoading && (() => {
+              const done = Object.keys(faceImages).length;
+              return (
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-slate-500">Tiến độ đăng ký</span>
+                    <span className={done >= 5 ? 'text-green-600 font-semibold' : 'text-orange-600'}>{done}/5 góc</span>
+                  </div>
+                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all ${
+                      done >= 5 ? 'bg-green-500' : 'bg-blue-500'
+                    }`} style={{ width: `${(done / 5) * 100}%` }} />
+                  </div>
+                  {done >= 5 && (
+                    <p className="text-xs text-green-600 font-medium mt-1 flex items-center gap-1">
+                      <Check size={12} /> Đã đăng ký đầy đủ – AI có thể nhận diện bạn ở mọi góc
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
 
-            {}
-            {faceImages.length < 5 && (
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={faceUploading}
-                className="w-full flex items-center justify-center gap-2 py-2.5 border-2 border-dashed border-blue-300 rounded-xl text-blue-600 text-sm font-medium hover:bg-blue-50 disabled:opacity-60 transition-colors"
-              >
-                <Camera size={16} />
-                {faceUploading ? 'Đang tải lên...' : 'Thêm ảnh khuôn mặt'}
-              </button>
-            )}
+            {/* Input file ẩn */}
+            <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp"
+              className="hidden" onChange={handleFaceUpload} />
 
-            {}
+            {/* Grid 5 góc */}
             {faceLoading ? (
               <p className="text-center text-slate-400 text-sm py-4">Đang tải...</p>
-            ) : faceImages.length === 0 ? (
-              <p className="text-center text-slate-400 text-sm py-4">Chưa có ảnh khuôn mặt</p>
             ) : (
-              <div className="grid grid-cols-3 gap-2">
-                {faceImages.map(img => (
-                  <div key={img.image_id} className="relative group rounded-xl overflow-hidden bg-slate-100 aspect-square">
-                    <img
-                      src={`/uploads/${img.image_path}`}
-                      alt="face"
-                      className="w-full h-full object-cover cursor-pointer"
-                      onClick={() => setPreviewImg(`/uploads/${img.image_path}`)}
-                    />
-                    {}
-                    <span className={`absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                      img.status === 'processed'   ? 'bg-green-500 text-white'
-                      : img.status === 'failed'    ? 'bg-red-500 text-white'
-                      : img.status === 'processing'? 'bg-yellow-400 text-white'
-                      : 'bg-slate-500 text-white'
-                    }`}>
-                      {img.status === 'processed'    ? 'Đã xử lý'
-                        : img.status === 'failed'    ? 'Lỗi'
-                        : img.status === 'processing'? 'Đang xử lý'
-                        : 'Chờ xử lý'}
-                    </span>
-                    {}
-                    <button
-                      onClick={() => handleDeleteFaceImage(img.image_id)}
-                      className="absolute top-1 right-1 p-1 bg-black/60 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                ))}
+              <div className="grid grid-cols-5 gap-2">
+                {FACE_ANGLES.map(angle => {
+                  const img = faceImages[angle.key];
+                  const isUploading = uploadingAngle === angle.key;
+                  return (
+                    <div key={angle.key} className="flex flex-col items-center gap-1">
+                      <button
+                        onClick={() => { setActiveAngle(angle.key); fileInputRef.current?.click(); }}
+                        title={angle.guide}
+                        className={`relative w-full aspect-square rounded-xl overflow-hidden border-2 transition-all ${
+                          isUploading ? 'border-blue-400 opacity-70'
+                          : img ? 'border-green-400 hover:border-green-500'
+                          : 'border-slate-200 hover:border-blue-400 border-dashed'
+                        }`}>
+                        {isUploading ? (
+                          <div className="w-full h-full bg-blue-50 flex items-center justify-center">
+                            <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                          </div>
+                        ) : img ? (
+                          <>
+                            <img src={`/uploads/${img.image_path}`} alt={angle.label}
+                              className="w-full h-full object-cover"
+                              onClick={e => { e.stopPropagation(); setPreviewImg(`/uploads/${img.image_path}`); }} />
+                            <span className={`absolute bottom-0 inset-x-0 text-[9px] text-center py-0.5 font-medium ${
+                              img.status === 'processed' ? 'bg-green-500/80 text-white'
+                              : img.status === 'failed'  ? 'bg-red-500/80 text-white'
+                              : 'bg-black/50 text-white'
+                            }`}>
+                              {img.status === 'processed' ? '✓ OK' : img.status === 'failed' ? '✗ Lỗi' : '⏳'}
+                            </span>
+                          </>
+                        ) : (
+                          <div className="w-full h-full bg-slate-50 flex items-center justify-center">
+                            <Camera size={16} className="text-slate-300" />
+                          </div>
+                        )}
+                      </button>
+
+                      {img ? (
+                        <button onClick={() => handleDeleteFaceImage(angle.key, img.image_id)}
+                          className="text-red-400 hover:text-red-600 transition-colors">
+                          <Trash2 size={11} />
+                        </button>
+                      ) : <div className="h-4" />}
+
+                      <p className="text-[10px] text-slate-500 text-center leading-tight">{angle.label}</p>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
             <p className="text-xs text-slate-400 text-center">
-              Tối đa 5 ảnh · Ảnh sẽ được AI xử lý để nhận diện khuôn mặt
+              Nhấn vào từng ô để upload ảnh theo góc · AI xử lý sau khi tải lên
             </p>
           </div>
         )}

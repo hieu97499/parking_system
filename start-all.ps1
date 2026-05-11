@@ -1,5 +1,5 @@
 ﻿$ROOT   = "c:\DoAn"
-$VENVPY = "C:\Users\mynam\AppData\Local\Programs\Python\Python311\venv_paddle\Scripts\python.exe"
+$VENVPY = "C:\DoAn\hardware\ai_service\venv\Scripts\python.exe"
 $LOGS   = "$ROOT\logs"
 New-Item -ItemType Directory -Path $LOGS -Force | Out-Null
 

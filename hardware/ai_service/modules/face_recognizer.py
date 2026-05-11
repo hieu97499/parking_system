@@ -1,10 +1,16 @@
 """
-Nhận diện khuôn mặt (Face Recognition)
+Nhận diện khuôn mặt (Face Recognition) - Phiên bản đa góc
 
 Flow:
   1. YOLOv8 (face_detector.pt)  – detect và crop vùng khuôn mặt
   2. InsightFace (buffalo_sc)    – trích xuất embedding 512 chiều
-  3. Cosine similarity           – so sánh với ảnh đã đăng ký trong uploads/faces/
+  3. Cosine similarity           – so sánh với TẤT CẢ embedding góc đã đăng ký
+
+Cải tiến đa góc:
+  - Mỗi user lưu tối đa 5 ảnh theo góc: front, left, right, up, down
+  - File ảnh đặt tên theo góc: front.jpg, left.jpg, right.jpg, up.jpg, down.jpg
+  - Khi nhận diện: tính cosine với toàn bộ embeddings, lấy MAX
+    → AI tự động khớp với góc mặt hiện tại của người dùng
 """
 
 import os
@@ -18,6 +24,17 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Các góc hợp lệ (phải trùng với tên file ảnh)
+VALID_ANGLES = {'front', 'left', 'right', 'up', 'down'}
+ANGLE_WEIGHTS = {
+    'front': 1.0,   # Chính diện – độ tin cậy cao nhất
+    'left':  0.95,
+    'right': 0.95,
+    'up':    0.9,
+    'down':  0.9,
+}
+
+
 class FaceRecognizer:
     _instance = None
 
@@ -26,7 +43,8 @@ class FaceRecognizer:
         self._embedder = None
         self._ready    = False
         self._lock     = Lock()
-        self._known_embeddings: dict[str, list[np.ndarray]] = {}
+        # Cấu trúc mới: {user_id: [{'angle': str, 'emb': np.ndarray, 'weight': float}]}
+        self._known_embeddings: dict[str, list[dict]] = {}
         self._load_models()
 
     @classmethod
@@ -55,7 +73,7 @@ class FaceRecognizer:
             self._embedder.prepare(ctx_id=-1, det_size=(320, 320))
 
             self._ready = True
-            logger.info(f"Face model da load: {face_model_path.name} + InsightFace buffalo_sc")
+            logger.info(f"Face model da load: {face_model_path.name} + InsightFace buffalo_sc (multi-angle mode)")
         except Exception as e:
             logger.error(f"Loi load face model: {e}")
 
@@ -67,11 +85,9 @@ class FaceRecognizer:
         if not self._ready:
             return None
         try:
-
             results = self._detector(image, verbose=False)
             boxes   = results[0].boxes
             if len(boxes) == 0:
-
                 face_img = image
             else:
                 best_idx = int(boxes.conf.argmax())
@@ -89,7 +105,6 @@ class FaceRecognizer:
 
             faces = self._embedder.get(face_img)
             if not faces:
-
                 faces = self._embedder.get(image)
             if not faces:
                 return None
@@ -103,7 +118,13 @@ class FaceRecognizer:
             return None
 
     def reload_known_faces(self) -> int:
-        """Quét lại uploads/faces/{user_id}/ và cập nhật embedding."""
+        """
+        Quét lại uploads/faces/{user_id}/ và cập nhật embedding đa góc.
+
+        Ưu tiên file đặt tên theo góc (front.jpg, left.jpg, ...):
+          - Nếu tìm thấy → lưu kèm thông tin angle + weight
+          - Nếu không có tên góc → vẫn load bình thường (backward compatible)
+        """
         if not self._ready:
             logger.warning("Face model chua san sang – bo qua reload")
             return 0
@@ -113,36 +134,68 @@ class FaceRecognizer:
             logger.warning(f"Thu muc anh khuon mat khong ton tai: {faces_root}")
             return 0
 
-        new_known: dict[str, list[np.ndarray]] = {}
+        new_known: dict[str, list[dict]] = {}
         loaded_users = 0
+        total_embeddings = 0
 
         for user_dir in faces_root.iterdir():
             if not user_dir.is_dir():
                 continue
             user_id    = user_dir.name
-            embeddings = []
+            emb_entries = []
 
-            for img_file in list(user_dir.glob("*.jpg")) + list(user_dir.glob("*.png")):
+            img_files = list(user_dir.glob("*.jpg")) + list(user_dir.glob("*.png"))
+            for img_file in img_files:
                 img = cv2.imread(str(img_file))
                 if img is None:
                     continue
-                emb = self._extract_embedding(img)
-                if emb is not None:
-                    embeddings.append(emb)
 
-            if embeddings:
-                new_known[user_id] = embeddings
+                emb = self._extract_embedding(img)
+                if emb is None:
+                    continue
+
+                # Xác định angle từ tên file
+                stem = img_file.stem.lower()
+                if stem in VALID_ANGLES:
+                    angle  = stem
+                    weight = ANGLE_WEIGHTS.get(stem, 0.9)
+                else:
+                    angle  = None
+                    weight = 0.9  # Ảnh cũ không có tên góc
+
+                emb_entries.append({
+                    'angle':  angle,
+                    'emb':    emb,
+                    'weight': weight,
+                })
+                total_embeddings += 1
+
+            if emb_entries:
+                new_known[user_id] = emb_entries
                 loaded_users += 1
+
+                angle_list = [e['angle'] for e in emb_entries if e['angle']]
+                logger.info(
+                    f"User {user_id}: {len(emb_entries)} embeddings, "
+                    f"angles={angle_list}"
+                )
 
         with self._lock:
             self._known_embeddings = new_known
 
-        logger.info(f"Da load {loaded_users} user voi khuon mat da dang ky")
+        logger.info(
+            f"Da load {loaded_users} user, "
+            f"{total_embeddings} embeddings (multi-angle)"
+        )
         return loaded_users
 
     def recognize(self, image_bytes: bytes) -> dict:
         """
-        Nhận diện khuôn mặt từ JPEG bytes.
+        Nhận diện khuôn mặt từ JPEG bytes – chế độ đa góc.
+
+        So sánh query embedding với TẤT CẢ góc đã đăng ký,
+        lấy similarity cao nhất (có tính trọng số theo góc).
+
         Returns: {"user_id": "uuid-...", "confidence": 0.92, "matched": True}
         """
         if not self._ready:
@@ -160,12 +213,19 @@ class FaceRecognizer:
 
             best_uid = None
             best_sim = 0.0
-            for uid, emb_list in self._known_embeddings.items():
-                for emb in emb_list:
-                    sim = float(np.dot(query_emb, emb))
-                    if sim > best_sim:
-                        best_sim = sim
-                        best_uid = uid
+
+            for uid, emb_entries in self._known_embeddings.items():
+                # Tính weighted cosine similarity với mỗi góc
+                user_best = 0.0
+                for entry in emb_entries:
+                    raw_sim = float(np.dot(query_emb, entry['emb']))
+                    weighted_sim = raw_sim * entry['weight']
+                    if weighted_sim > user_best:
+                        user_best = weighted_sim
+
+                if user_best > best_sim:
+                    best_sim = user_best
+                    best_uid = uid
 
         matched = best_uid is not None and best_sim >= config.FACE_CONF_THRESHOLD
         return {
@@ -173,3 +233,9 @@ class FaceRecognizer:
             "confidence": round(best_sim, 4),
             "matched":    matched,
         }
+
+    def get_user_angles(self, user_id: str) -> list[str]:
+        """Trả về danh sách các góc đã có embedding của user."""
+        with self._lock:
+            entries = self._known_embeddings.get(user_id, [])
+            return [e['angle'] for e in entries if e['angle']]

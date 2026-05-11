@@ -3,10 +3,11 @@ import { api } from './client';
 export const authApi = {
   login:          (phone_number, password) => api.post('/auth/login', { phone_number, password }),
   register:       (data)                   => api.post('/auth/register', data),
+  setup:          (data)                   => api.post('/auth/setup', data),
   logout:         ()                       => api.post('/auth/logout'),
   me:             ()                       => api.get('/auth/me'),
-  updateProfile:  (data)                   => api.put('/auth/profile', data),
-  changePassword: (data)                   => api.put('/auth/change-password', data),
+  updateProfile:  (data)                   => api.patch('/auth/profile', data),
+  changePassword: (data)                   => api.patch('/auth/change-password', data),
 };
 
 export const vehiclesApi = {
@@ -34,9 +35,10 @@ export const sessionsApi = {
 };
 
 export const authorizationsApi = {
-  list:   ()   => api.get('/authorizations'),
-  detail: (id) => api.get(`/authorizations/${id}`),
-  revoke: (id) => api.delete(`/authorizations/${id}`),
+  list:   ()       => api.get('/authorizations'),
+  detail: (id)     => api.get(`/authorizations/${id}`),
+  revoke: (id)     => api.delete(`/authorizations/${id}`),
+  create: (data)   => api.post('/authorizations', data),
 };
 
 export const notificationsApi = {
@@ -46,9 +48,10 @@ export const notificationsApi = {
 };
 
 export const faceImagesApi = {
-  list:   ()          => api.get('/face-images'),
-  upload: (imageData) => api.post('/face-images', { image_data: imageData }),
-  remove: (id)        => api.delete(`/face-images/${id}`),
+  list:        ()                => api.get('/face-images'),
+  upload:      (imageData, angle) => api.post('/face-images', { image_data: imageData, angle }),
+  remove:      (id)              => api.delete(`/face-images/${id}`),
+  setupStatus: ()                => api.get('/face-images/setup-status'),
 };
 
 export const monthlyPassesApi = {
