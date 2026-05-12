@@ -14,12 +14,14 @@ router.post('/register', async (req, res, next) => {
     if (password.length < 6) {
       return res.status(400).json({ error: 'Mật khẩu phải có ít nhất 6 ký tự' });
     }
-    const phoneRegex = /^(0[3|5|7|8|9])+([0-9]{8})$/;
-    if (!phoneRegex.test(phone_number)) {
-      return res.status(400).json({ error: 'Số điện thoại không hợp lệ' });
+    // Chuẩn hóa: bỏ khoảng trắng, dấu gạch, chuyển +84 → 0
+    const cleanPhone = phone_number.trim().replace(/[\s\-\.]/g, '').replace(/^\+84/, '0');
+    const phoneRegex = /^0[35789][0-9]{8}$/;
+    if (!phoneRegex.test(cleanPhone)) {
+      return res.status(400).json({ error: 'Số điện thoại không hợp lệ (VD: 0912345678)' });
     }
 
-    const exists = await pool.query('SELECT 1 FROM users WHERE phone_number = $1', [phone_number]);
+    const exists = await pool.query('SELECT 1 FROM users WHERE phone_number = $1', [cleanPhone]);
     if (exists.rows.length > 0) {
       return res.status(409).json({ error: 'Số điện thoại đã được đăng ký' });
     }
@@ -29,7 +31,7 @@ router.post('/register', async (req, res, next) => {
       `INSERT INTO users (full_name, phone_number, password_hash)
        VALUES ($1, $2, $3)
        RETURNING user_id, full_name, phone_number, is_active, created_at`,
-      [full_name.trim(), phone_number.trim(), password_hash]
+      [full_name.trim(), cleanPhone, password_hash]
     );
     const user = userRes.rows[0];
 
@@ -61,7 +63,7 @@ router.post('/login', async (req, res, next) => {
 
     const result = await pool.query(
       'SELECT * FROM users WHERE phone_number = $1',
-      [phone_number.trim()]
+      [phone_number.trim().replace(/[\s\-\.]/g, '').replace(/^\+84/, '0')]
     );
     const user = result.rows[0];
     if (!user) {
