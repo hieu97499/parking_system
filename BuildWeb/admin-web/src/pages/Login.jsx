@@ -38,30 +38,33 @@ export default function Login() {
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div className="relative z-10 w-full flex items-center justify-center">
       <div className="w-full max-w-md">
-        {}
-        <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
-          {}
-          <div className="bg-gradient-to-r from-blue-700 to-blue-600 px-8 py-8 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-white/20 flex items-center justify-center mx-auto mb-4">
-              <ParkingSquare size={32} className="text-white" />
+        <div
+          className="rounded-2xl overflow-hidden shadow-2xl"
+          style={{ background: 'rgba(15,23,42,0.65)', backdropFilter: 'blur(16px)', border: '1px solid rgba(255,255,255,0.12)' }}
+        >
+          {/* Header */}
+          <div className="px-8 py-8 text-center border-b border-white/10">
+            <div className="w-16 h-16 rounded-2xl bg-blue-500/20 border border-blue-400/30 flex items-center justify-center mx-auto mb-4">
+              <ParkingSquare size={32} className="text-blue-300" />
             </div>
             <h1 className="text-xl font-bold text-white">Bãi Xe Thông Minh</h1>
-            <p className="text-blue-200 text-sm mt-1">Trường Đại Học Hàng Hải Việt Nam</p>
+            <p className="text-slate-400 text-sm mt-1">Trường Đại Học Hàng Hải Việt Nam</p>
           </div>
 
-          {}
+          {/* Form */}
           <form onSubmit={handleSubmit} className="px-8 py-8 space-y-5">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">
                 Tên đăng nhập
               </label>
               <div className="relative">
-                <User size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <User size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
                   value={form.username}
                   onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
-                  className="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full pl-9 pr-4 py-2.5 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)' }}
                   placeholder="admin"
                   required
                   autoFocus
@@ -70,23 +73,24 @@ export default function Login() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label className="block text-sm font-medium text-slate-300 mb-1.5">
                 Mật khẩu
               </label>
               <div className="relative">
-                <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type={showPw ? 'text' : 'password'}
                   value={form.password}
                   onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                  className="w-full pl-9 pr-10 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full pl-9 pr-10 py-2.5 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)' }}
                   placeholder="••••••••"
                   required
                 />
                 <button
                   type="button"
                   onClick={() => setShowPw(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
                 >
                   {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
@@ -94,7 +98,8 @@ export default function Login() {
             </div>
 
             {error && (
-              <div className="flex items-center gap-2 text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2.5">
+              <div className="flex items-center gap-2 text-sm text-rose-300 rounded-lg px-3 py-2.5"
+                style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)' }}>
                 <AlertCircle size={15} />
                 {error}
               </div>
@@ -103,13 +108,14 @@ export default function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
+              className="w-full bg-blue-500 hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2.5 rounded-lg transition-colors text-sm"
             >
               {loading ? 'Đang đăng nhập...' : 'Đăng nhập'}
             </button>
 
-            <div className="text-center text-xs text-gray-400 bg-gray-50 rounded-lg p-3">
-              Tài khoản demo: <strong className="text-gray-600">admin</strong> / <strong className="text-gray-600">Admin@123</strong>
+            <div className="text-center text-xs text-slate-500 rounded-lg p-3"
+              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>
+              Tài khoản demo: <strong className="text-slate-300">admin</strong> / <strong className="text-slate-300">Admin@123</strong>
             </div>
           </form>
         </div>
