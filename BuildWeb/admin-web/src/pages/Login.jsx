@@ -26,7 +26,17 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex items-center justify-center p-4">
+    <div
+      className="min-h-screen flex items-center justify-center p-4 relative"
+      style={{
+        backgroundImage: 'url(/parking-bg.jpg)',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+      }}
+    >
+      {/* Dark overlay */}
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="relative z-10 w-full flex items-center justify-center">
       <div className="w-full max-w-md">
         {}
         <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
@@ -103,6 +113,7 @@ export default function Login() {
             </div>
           </form>
         </div>
+      </div>
       </div>
     </div>
   )

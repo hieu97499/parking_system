@@ -27,7 +27,17 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-blue-600 to-blue-800 flex flex-col items-center justify-center px-6">
+    <div
+      className="min-h-screen flex flex-col items-center justify-center px-6 relative"
+      style={{
+        backgroundImage: 'url(/parking-bg.jpg)',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+      }}
+    >
+      {/* Dark overlay */}
+      <div className="absolute inset-0 bg-black/55 backdrop-blur-sm" />
+      <div className="relative z-10 w-full flex flex-col items-center">
       {}
       <div className="mb-8 text-center">
         <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg">
@@ -96,6 +106,7 @@ export default function Login() {
             Đăng ký ngay
           </Link>
         </p>
+      </div>
       </div>
     </div>
   );
