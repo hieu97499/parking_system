@@ -15,9 +15,42 @@ async function isBackendAvailable() {
 
 export const useStore = create((set, get) => ({
 
-  isAuthenticated: !!localStorage.getItem('admin_token'),
+  isAuthenticated: false,
+  authChecking: !!localStorage.getItem('admin_token'),
   currentAdmin: JSON.parse(localStorage.getItem('admin_info') || 'null'),
   useApi: false,
+
+  async initAuth() {
+    const token = localStorage.getItem('admin_token')
+    if (!token) { set({ authChecking: false }); return }
+    const ok = await isBackendAvailable()
+    if (ok) {
+      try {
+        const res = await fetch(
+          (import.meta.env.VITE_API_URL || 'http://localhost:4000/api') + '/auth/me',
+          { headers: { Authorization: `Bearer ${token}` } }
+        )
+        if (res.ok) {
+          const data = await res.json()
+          set({ isAuthenticated: true, currentAdmin: data, useApi: true, authChecking: false })
+        } else {
+          localStorage.removeItem('admin_token')
+          localStorage.removeItem('admin_info')
+          set({ isAuthenticated: false, currentAdmin: null, authChecking: false })
+        }
+      } catch {
+        set({ isAuthenticated: true, useApi: false, authChecking: false })
+      }
+    } else {
+      // Backend offline - dùng cache
+      const adminInfo = localStorage.getItem('admin_info')
+      if (adminInfo) {
+        set({ isAuthenticated: true, currentAdmin: JSON.parse(adminInfo), authChecking: false })
+      } else {
+        set({ isAuthenticated: false, authChecking: false })
+      }
+    }
+  },
 
   async initApi() {
     if (!localStorage.getItem('admin_token')) return

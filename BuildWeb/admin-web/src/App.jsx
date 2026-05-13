@@ -14,15 +14,22 @@ import Config from './pages/Config'
 
 function Protected({ children }) {
   const auth = useStore(s => s.isAuthenticated)
+  const checking = useStore(s => s.authChecking)
+  if (checking) return (
+    <div className="flex items-center justify-center h-screen bg-slate-900">
+      <div className="text-slate-400 text-sm">Đang xác thực...</div>
+    </div>
+  )
   return auth ? children : <Navigate to="/login" replace />
 }
 
 export default function App() {
   const initApi    = useStore(s => s.initApi)
   const initSocket = useStore(s => s.initSocket)
+  const initAuth   = useStore(s => s.initAuth)
 
   useEffect(() => {
-    initApi()
+    initAuth()
     initSocket()
   }, [])
 

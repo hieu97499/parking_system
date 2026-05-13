@@ -6,14 +6,39 @@ import {
 
 export const useStore = create((set, get) => ({
 
-  isAuthenticated: !!localStorage.getItem('user_token'),
+  isAuthenticated: false,
+  authChecking: !!localStorage.getItem('user_token'),
   currentUser: JSON.parse(localStorage.getItem('user_info') || 'null'),
+
+  async initAuth() {
+    const token = localStorage.getItem('user_token');
+    if (!token) { set({ authChecking: false }); return; }
+    try {
+      const res = await fetch('/api/user/auth/me', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const user = { id: data.id, full_name: data.full_name, phone_number: data.phone_number, avatar_path: data.avatar_path };
+        localStorage.setItem('user_info', JSON.stringify(user));
+        set({ isAuthenticated: true, currentUser: user, authChecking: false });
+      } else {
+        localStorage.removeItem('user_token');
+        localStorage.removeItem('user_info');
+        set({ isAuthenticated: false, currentUser: null, authChecking: false });
+      }
+    } catch {
+      // Mạng lỗi - tin tưởng token cũ tạm thời
+      const cached = localStorage.getItem('user_info');
+      set({ isAuthenticated: !!cached, authChecking: false });
+    }
+  },
 
   async login(phone_number, password) {
     const data = await authApi.login(phone_number, password);
     localStorage.setItem('user_token', data.token);
     localStorage.setItem('user_info', JSON.stringify(data.user));
-    set({ isAuthenticated: true, currentUser: data.user });
+    set({ isAuthenticated: true, currentUser: data.user, authChecking: false });
   },
 
   async register(formData) {
@@ -26,7 +51,7 @@ export const useStore = create((set, get) => ({
     localStorage.removeItem('user_token');
     localStorage.removeItem('user_info');
     set({
-      isAuthenticated: false, currentUser: null,
+      isAuthenticated: false, currentUser: null, authChecking: false,
       wallet: null, vehicles: [], sessions: [], activeSessions: [],
     });
   },

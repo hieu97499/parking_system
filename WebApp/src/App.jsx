@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect } from 'react';
 import { useStore } from './store/useStore';
 import Layout from './components/Layout';
 import Login from './pages/Login';
@@ -13,11 +14,21 @@ import MonthlyPasses from './pages/MonthlyPasses';
 
 function ProtectedRoute({ children }) {
   const isAuthenticated = useStore(s => s.isAuthenticated);
+  const authChecking = useStore(s => s.authChecking);
+  if (authChecking) return (
+    <div className="flex items-center justify-center h-screen bg-slate-900">
+      <div className="text-slate-400 text-sm">Đang xác thực...</div>
+    </div>
+  );
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return children;
 }
 
 export default function App() {
+  const initAuth = useStore(s => s.initAuth);
+
+  useEffect(() => { initAuth(); }, []);
+
   return (
     <BrowserRouter>
       <Routes>
