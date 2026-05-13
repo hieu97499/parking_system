@@ -1,7 +1,11 @@
 
 
+const fs      = require('fs');
+const path    = require('path');
 const router  = require('express').Router();
 const { pool }= require('../db');
+
+const CAPTURES_DIR = path.join(__dirname, '..', '..', 'uploads', 'captures');
 
 function hardwareAuth(req, res, next) {
   const key = req.headers['x-hardware-key'];
@@ -424,6 +428,36 @@ router.get('/registered-vehicles', hardwareAuth, async (req, res, next) => {
        ORDER BY u.full_name, v.license_plate`
     );
     res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/hardware/upload-image
+ * Nhận ảnh base64 từ AI service (máy local), lưu vào uploads/captures/ trên server.
+ * Trả về đường dẫn tương đối để lưu vào DB.
+ */
+router.post('/upload-image', hardwareAuth, (req, res, next) => {
+  try {
+    const { image_b64, prefix = 'capture' } = req.body;
+    if (!image_b64 || typeof image_b64 !== 'string') {
+      return res.status(400).json({ error: 'Thiếu image_b64' });
+    }
+
+    const b64Data = image_b64.includes(',') ? image_b64.split(',')[1] : image_b64;
+    const buffer  = Buffer.from(b64Data, 'base64');
+
+    const ts       = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 15);
+    const uid      = Math.random().toString(36).slice(2, 8);
+    const safePfx  = String(prefix).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
+    const filename = `${safePfx}_${ts}_${uid}.jpg`;
+    const filepath = path.join(CAPTURES_DIR, filename);
+
+    fs.mkdirSync(CAPTURES_DIR, { recursive: true });
+    fs.writeFileSync(filepath, buffer);
+
+    res.json({ path: `captures/${filename}` });
   } catch (err) {
     next(err);
   }

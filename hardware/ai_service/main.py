@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -61,14 +62,29 @@ class ImagePayload(BaseModel):
     image_b64: str
 
 def _save_capture(image_bytes: bytes, prefix: str) -> str:
-    """Lưu ảnh chụp vào CAPTURES_DIR, trả về đường dẫn tương đối."""
+    """Upload ảnh lên backend server để lưu vào disk trên server.
+    Nếu thất bại (server chưa sẵn sàng), fallback lưu local."""
+    b64 = base64.b64encode(image_bytes).decode()
+    try:
+        resp = httpx.post(
+            config.BACKEND_URL.rstrip('/') + '/api/hardware/upload-image',
+            json={"image_b64": b64, "prefix": prefix},
+            headers={"x-hardware-key": config.HARDWARE_API_KEY},
+            timeout=5.0,
+        )
+        if resp.status_code == 200:
+            return resp.json()["path"]
+        logger.warning(f"Upload ảnh: server trả {resp.status_code} – fallback local")
+    except Exception as e:
+        logger.warning(f"Upload ảnh lên server thất bại ({e}) – fallback lưu local")
+
+    # fallback: lưu local (dùng khi chạy không có server)
     ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
     uid      = uuid.uuid4().hex[:6]
     filename = f"{prefix}_{ts}_{uid}.jpg"
     filepath = os.path.join(config.CAPTURES_DIR, filename)
     with open(filepath, "wb") as f:
         f.write(image_bytes)
-
     return f"captures/{filename}"
 
 def _b64_to_bytes(b64: str) -> bytes:
