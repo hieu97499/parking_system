@@ -21,7 +21,12 @@ export const vehiclesApi = {
 
 export const walletApi = {
   info:         ()     => api.get('/wallet'),
-  transactions: (page, limit) => api.get(`/wallet/transactions?page=${page}&limit=${limit}`),
+  transactions: (page, limit, filters = {}) => {
+    const p = new URLSearchParams({ page, limit });
+    if (filters.year && filters.month) { p.set('year', filters.year); p.set('month', filters.month); }
+    if (filters.type && filters.type !== 'all') p.set('type', filters.type);
+    return api.get(`/wallet/transactions?${p}`);
+  },
   topup:        (data) => api.post('/wallet/topup', data),
   sepayCreate:  (data) => api.post('/wallet/sepay/create', data),
   sepayStatus:  (ref)  => api.get(`/wallet/sepay/status/${ref}`),

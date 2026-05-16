@@ -15,27 +15,49 @@ router.get('/', userAuth, async (req, res, next) => {
 
 router.get('/transactions', userAuth, async (req, res, next) => {
   try {
-    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const page  = Math.max(1, parseInt(req.query.page)  || 1);
     const limit = Math.min(50, parseInt(req.query.limit) || 20);
     const offset = (page - 1) * limit;
+    const { year, month, type } = req.query;
 
-    const result = await pool.query(
-      `SELECT t.transaction_id AS id, t.transaction_type, t.amount,
-              t.balance_before, t.balance_after, t.payment_gateway,
-              t.status, t.description AS note, t.created_at,
-              ps.entry_time, ps.exit_time, ps.license_plate AS session_plate
-       FROM wallet_transactions t
-       LEFT JOIN parking_sessions ps ON ps.session_id = t.parking_session_id
-       WHERE t.user_id = $1
-       ORDER BY t.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [req.user.id, limit, offset]
-    );
+    const conds  = ['t.user_id = $1'];
+    const params = [req.user.id];
 
-    const countResult = await pool.query(
-      'SELECT COUNT(*) FROM wallet_transactions WHERE user_id = $1',
-      [req.user.id]
-    );
+    const y = parseInt(year), m = parseInt(month);
+    if (year && month && !isNaN(y) && !isNaN(m) && m >= 1 && m <= 12) {
+      params.push(y, m);
+      conds.push(`EXTRACT(YEAR  FROM t.created_at) = $${params.length - 1}`);
+      conds.push(`EXTRACT(MONTH FROM t.created_at) = $${params.length}`);
+    }
+
+    const validTypes = ['topup', 'deduct', 'refund', 'withdraw'];
+    if (type && validTypes.includes(type)) {
+      params.push(type);
+      conds.push(`t.transaction_type = $${params.length}`);
+    }
+
+    const where       = conds.join(' AND ');
+    const countParams = [...params];
+    params.push(limit, offset);
+
+    const [result, countResult] = await Promise.all([
+      pool.query(
+        `SELECT t.transaction_id AS id, t.transaction_type, t.amount,
+                t.balance_before, t.balance_after, t.payment_gateway,
+                t.status, t.description AS note, t.created_at,
+                ps.entry_time, ps.exit_time, ps.license_plate AS session_plate
+         FROM wallet_transactions t
+         LEFT JOIN parking_sessions ps ON ps.session_id = t.parking_session_id
+         WHERE ${where}
+         ORDER BY t.created_at DESC
+         LIMIT $${params.length - 1} OFFSET $${params.length}`,
+        params
+      ),
+      pool.query(
+        `SELECT COUNT(*) FROM wallet_transactions t WHERE ${where}`,
+        countParams
+      ),
+    ]);
 
     res.json({
       transactions: result.rows,

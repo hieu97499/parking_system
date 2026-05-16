@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { walletApi, withdrawApi } from '../api/services';
-import { Wallet, ArrowDownLeft, ArrowUpRight, RefreshCw, Plus, X, Banknote, Clock, Copy, CheckCircle } from 'lucide-react';
+import { Wallet, ArrowDownLeft, ArrowUpRight, RefreshCw, Plus, X, Banknote, Clock, Copy, CheckCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 
 function fmtCurrency(n) {
   if (n == null) return '—';
@@ -38,9 +38,34 @@ export default function WalletPage() {
   const [success, setSuccess]           = useState('');
 
   // SePay QR state
-  const [qrData, setQrData]   = useState(null);  // { ref_code, qr_url, bank_account, bank_code, account_name, amount }
+  const [qrData, setQrData]   = useState(null);
   const [copied, setCopied]   = useState('');
   const pollRef               = useRef(null);
+
+  // Transaction filter
+  const _now = new Date();
+  const initFilter = { year: _now.getFullYear(), month: _now.getMonth() + 1, type: 'all' };
+  const [txFilter, setTxFilter] = useState(initFilter);
+  const txFilterRef             = useRef(initFilter);
+
+  function applyFilter(f) {
+    setTxFilter(f);
+    txFilterRef.current = f;
+    fetchTransactions(1, f);
+  }
+  function prevMonth() {
+    const base = txFilter.year
+      ? new Date(txFilter.year, txFilter.month - 2)
+      : new Date(_now.getFullYear(), _now.getMonth() - 1);
+    applyFilter({ ...txFilterRef.current, year: base.getFullYear(), month: base.getMonth() + 1 });
+  }
+  function nextMonth() {
+    if (!txFilter.year) return;
+    const next = new Date(txFilter.year, txFilter.month);
+    if (next > new Date(_now.getFullYear(), _now.getMonth())) return;
+    applyFilter({ ...txFilterRef.current, year: next.getFullYear(), month: next.getMonth() + 1 });
+  }
+  const isNextDisabled = !txFilter.year || (txFilter.year === _now.getFullYear() && txFilter.month === _now.getMonth() + 1);
 
   const [wForm, setWForm]   = useState({ amount: '', bank_name: '', bank_account: '', account_name: '' });
   const [wLoading, setWLoading] = useState(false);
@@ -48,7 +73,7 @@ export default function WalletPage() {
 
   useEffect(() => {
     fetchWallet();
-    fetchTransactions(1);
+    fetchTransactions(1, txFilterRef.current);
     withdrawApi.history().then(r => setWithdrawals(r || [])).catch(() => {});
     return () => clearInterval(pollRef.current);
   }, []);
@@ -90,7 +115,7 @@ export default function WalletPage() {
             setAmount('');
             setSuccess(`Nạp thành công ${fmtCurrency(s.amount)}! Số dư mới: ${fmtCurrency(s.balance_after)}`);
             fetchWallet();
-            fetchTransactions(1);
+            fetchTransactions(1, txFilterRef.current);
           }
         } catch (_) {}
       }, 5000);
@@ -320,8 +345,40 @@ export default function WalletPage() {
         </div>
       )}
 
-      {}
+      {/* Transaction history with filter */}
       <div>
+        {/* Filter bar */}
+        <div className="space-y-2 mb-3">
+          <div className="flex items-center gap-2">
+            <button onClick={prevMonth} className="w-9 h-9 flex-shrink-0 flex items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50">
+              <ChevronLeft size={16} />
+            </button>
+            <button
+              onClick={() => txFilter.year
+                ? applyFilter({ ...txFilterRef.current, year: null, month: null })
+                : applyFilter({ ...txFilterRef.current, year: _now.getFullYear(), month: _now.getMonth() + 1 })
+              }
+              className={`flex-1 text-sm font-semibold py-2 rounded-xl border text-center transition-colors ${
+                txFilter.year ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-slate-50 text-slate-500 border-slate-200'
+              }`}
+            >
+              {txFilter.year ? `Tháng ${txFilter.month}/${txFilter.year}` : 'Tất cả thời gian'}
+            </button>
+            <button onClick={nextMonth} disabled={isNextDisabled} className="w-9 h-9 flex-shrink-0 flex items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-30">
+              <ChevronRight size={16} />
+            </button>
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto pb-1">
+            {[['all','Tất cả'], ['topup','Nạp tiền'], ['deduct','Gửi xe'], ['refund','Hoàn tiền'], ['withdraw','Rút tiền']].map(([val, label]) => (
+              <button key={val}
+                onClick={() => applyFilter({ ...txFilterRef.current, type: val })}
+                className={`flex-shrink-0 text-xs px-3 py-1.5 rounded-full border font-medium transition-colors ${
+                  txFilter.type === val ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                }`}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
         <p className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
           Lịch sử giao dịch ({walletTotal})
         </p>
@@ -343,13 +400,17 @@ export default function WalletPage() {
                   <p className="text-xs text-slate-300">{fmtDateTime(t.created_at)}</p>
                 </div>
                 <div className="text-right flex-shrink-0">
-                  <p className={`font-semibold text-sm
-                    ${t.transaction_type === 'topup' || t.transaction_type === 'refund'
-                      ? 'text-green-600' : 'text-red-500'}`}>
+                  <p className={`font-semibold text-sm ${
+                    t.status === 'pending' ? 'text-slate-400' :
+                    t.transaction_type === 'topup' || t.transaction_type === 'refund' ? 'text-green-600' : 'text-red-500'
+                  }`}>
                     {t.transaction_type === 'topup' || t.transaction_type === 'refund' ? '+' : '-'}
                     {fmtCurrency(t.amount)}
                   </p>
-                  <p className="text-xs text-slate-400">{fmtCurrency(t.balance_after)}</p>
+                  {t.status === 'pending'
+                    ? <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded-full">Đang xử lý</span>
+                    : <p className="text-xs text-slate-400">{fmtCurrency(t.balance_after)}</p>
+                  }
                 </div>
               </div>
             ))}
@@ -359,10 +420,10 @@ export default function WalletPage() {
         {}
         {totalPages > 1 && (
           <div className="flex justify-center gap-2 mt-4">
-            <button disabled={walletPage <= 1} onClick={() => fetchTransactions(walletPage - 1)}
+            <button disabled={walletPage <= 1} onClick={() => fetchTransactions(walletPage - 1, txFilter)}
               className="px-3 py-1.5 text-sm border border-slate-200 rounded-lg disabled:opacity-40">Trước</button>
             <span className="px-3 py-1.5 text-sm text-slate-500">{walletPage} / {totalPages}</span>
-            <button disabled={walletPage >= totalPages} onClick={() => fetchTransactions(walletPage + 1)}
+            <button disabled={walletPage >= totalPages} onClick={() => fetchTransactions(walletPage + 1, txFilter)}
               className="px-3 py-1.5 text-sm border border-slate-200 rounded-lg disabled:opacity-40">Tiếp</button>
           </div>
         )}

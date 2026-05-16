@@ -87,9 +87,9 @@ export const useStore = create((set, get) => ({
     } catch {}
   },
 
-  async fetchTransactions(page = 1) {
+  async fetchTransactions(page = 1, filters = {}) {
     try {
-      const data = await walletApi.transactions(page, 20);
+      const data = await walletApi.transactions(page, 20, filters);
       set({ walletTransactions: data.transactions, walletPage: page, walletTotal: data.total });
     } catch {}
   },
