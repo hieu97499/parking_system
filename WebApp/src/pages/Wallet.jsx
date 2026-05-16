@@ -49,7 +49,8 @@ export default function WalletPage() {
   useEffect(() => {
     fetchWallet();
     fetchTransactions(1);
-    withdrawApi.history().then(r => setWithdrawals(r.data || [])).catch(() => {});
+    withdrawApi.history().then(r => setWithdrawals(r || [])).catch(() => {});
+    return () => clearInterval(pollRef.current);
   }, []);
 
   async function handleWithdraw(e) {
@@ -64,7 +65,7 @@ export default function WalletPage() {
       setShowWithdraw(false);
       fetchWallet();
       const r = await withdrawApi.history();
-      setWithdrawals(r.data || []);
+      setWithdrawals(r || []);
     } catch (err) { setError(err.message); }
     finally { setWLoading(false); }
   }
