@@ -77,17 +77,17 @@ export default function WalletPage() {
     setLoading(true);
     try {
       const res = await walletApi.sepayCreate({ amount: num });
-      setQrData(res.data);
+      setQrData(res);
       // Bắt đầu poll trạng thái mỗi 5 giây
       pollRef.current = setInterval(async () => {
         try {
-          const s = await walletApi.sepayStatus(res.data.ref_code);
-          if (s.data.status === 'success') {
+          const s = await walletApi.sepayStatus(res.ref_code);
+          if (s.status === 'success') {
             clearInterval(pollRef.current);
             setQrData(null);
             setShowTopup(false);
             setAmount('');
-            setSuccess(`Nạp thành công ${fmtCurrency(s.data.amount)}! Số dư mới: ${fmtCurrency(s.data.balance_after)}`);
+            setSuccess(`Nạp thành công ${fmtCurrency(s.amount)}! Số dư mới: ${fmtCurrency(s.balance_after)}`);
             fetchWallet();
             fetchTransactions(1);
           }
