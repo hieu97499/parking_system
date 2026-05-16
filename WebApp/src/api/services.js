@@ -23,6 +23,8 @@ export const walletApi = {
   info:         ()     => api.get('/wallet'),
   transactions: (page, limit) => api.get(`/wallet/transactions?page=${page}&limit=${limit}`),
   topup:        (data) => api.post('/wallet/topup', data),
+  sepayCreate:  (data) => api.post('/wallet/sepay/create', data),
+  sepayStatus:  (ref)  => api.get(`/wallet/sepay/status/${ref}`),
 };
 
 export const sessionsApi = {

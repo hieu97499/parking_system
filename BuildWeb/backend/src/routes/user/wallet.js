@@ -194,4 +194,129 @@ router.get('/withdrawals', userAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ──────────────────────────────────────────────
+// SePay integration routes
+// ──────────────────────────────────────────────
+
+// POST /api/user/wallet/sepay/create — tạo giao dịch nạp tiền chờ xác nhận
+router.post('/sepay/create', userAuth, async (req, res, next) => {
+  try {
+    const { amount } = req.body;
+    const numAmount = parseFloat(amount);
+    if (!numAmount || numAmount < 10000) return res.status(400).json({ error: 'Nạp tối thiểu 10,000 VND' });
+    if (numAmount > 10000000) return res.status(400).json({ error: 'Nạp tối đa 10,000,000 VND mỗi lần' });
+
+    // Tạo mã tham chiếu duy nhất: NAP + 6 ký tự đầu user_id + 6 chữ số cuối timestamp
+    const shortId = req.user.id.replace(/-/g, '').slice(0, 6).toUpperCase();
+    const ts = Date.now().toString().slice(-6);
+    const refCode = `NAP${shortId}${ts}`;
+
+    const walletRes = await pool.query('SELECT wallet_id, balance FROM wallets WHERE user_id = $1', [req.user.id]);
+    if (!walletRes.rows[0]) return res.status(404).json({ error: 'Không tìm thấy ví' });
+
+    const wallet = walletRes.rows[0];
+
+    await pool.query(
+      `INSERT INTO wallet_transactions
+         (wallet_id, user_id, transaction_type, amount, balance_before, balance_after, payment_gateway, status, description, reference_code)
+       VALUES ($1, $2, 'topup', $3, $4, $4, 'sepay', 'pending', 'Nạp tiền qua SePay – chờ thanh toán', $5)`,
+      [wallet.wallet_id, req.user.id, numAmount, parseFloat(wallet.balance), refCode]
+    );
+
+    const bankAccount = process.env.SEPAY_BANK_ACCOUNT || '';
+    const bankCode    = process.env.SEPAY_BANK_CODE    || '';
+    const accountName = process.env.SEPAY_ACCOUNT_NAME || '';
+
+    const qrUrl = `https://img.vietqr.io/image/${bankCode}-${bankAccount}-qr_only.png` +
+      `?amount=${numAmount}&addInfo=${encodeURIComponent(refCode)}&accountName=${encodeURIComponent(accountName)}`;
+
+    res.json({ ref_code: refCode, amount: numAmount, bank_account: bankAccount, bank_code: bankCode, account_name: accountName, qr_url: qrUrl });
+  } catch (err) { next(err); }
+});
+
+// GET /api/user/wallet/sepay/status/:refCode — kiểm tra trạng thái giao dịch
+router.get('/sepay/status/:refCode', userAuth, async (req, res, next) => {
+  try {
+    const { refCode } = req.params;
+    if (!/^NAP[A-Z0-9]{12}$/.test(refCode)) return res.status(400).json({ error: 'Mã không hợp lệ' });
+
+    const result = await pool.query(
+      `SELECT status, amount, balance_after FROM wallet_transactions
+       WHERE reference_code = $1 AND user_id = $2`,
+      [refCode, req.user.id]
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
+    res.json(result.rows[0]);
+  } catch (err) { next(err); }
+});
+
+// POST /api/user/wallet/sepay-webhook — nhận webhook từ SePay (không cần auth)
+router.post('/sepay-webhook', async (req, res, next) => {
+  try {
+    // Xác thực API key từ SePay header
+    const authHeader = req.headers['authorization'] || '';
+    const apiKey     = process.env.SEPAY_API_KEY || '';
+    if (!apiKey || authHeader !== `Apikey ${apiKey}`) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const { content, transferAmount, transferType } = req.body;
+    // Chỉ xử lý tiền vào
+    if (transferType !== 'in') return res.json({ success: true });
+
+    // Tìm mã tham chiếu trong nội dung chuyển khoản
+    const match = (content || '').match(/NAP[A-Z0-9]{12}/);
+    if (!match) return res.json({ success: true });
+    const refCode = match[0];
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const txRes = await client.query(
+        `SELECT transaction_id, wallet_id, user_id, amount
+         FROM wallet_transactions
+         WHERE reference_code = $1 AND status = 'pending'
+         FOR UPDATE`,
+        [refCode]
+      );
+      if (!txRes.rows[0]) {
+        await client.query('ROLLBACK');
+        return res.json({ success: true }); // đã xử lý hoặc không tìm thấy
+      }
+
+      const tx = txRes.rows[0];
+
+      const walletRes = await client.query(
+        'SELECT balance FROM wallets WHERE wallet_id = $1 FOR UPDATE',
+        [tx.wallet_id]
+      );
+      const currentBalance = parseFloat(walletRes.rows[0].balance);
+      const creditAmount   = parseFloat(transferAmount) || parseFloat(tx.amount);
+      const newBalance     = currentBalance + creditAmount;
+
+      await client.query(
+        'UPDATE wallets SET balance = $1, updated_at = NOW() WHERE wallet_id = $2',
+        [newBalance, tx.wallet_id]
+      );
+
+      await client.query(
+        `UPDATE wallet_transactions
+         SET status = 'success', amount = $1, balance_before = $2, balance_after = $3,
+             description = 'Nạp tiền qua SePay – thành công', updated_at = NOW()
+         WHERE transaction_id = $4`,
+        [creditAmount, currentBalance, newBalance, tx.transaction_id]
+      );
+
+      await client.query('COMMIT');
+      res.json({ success: true });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

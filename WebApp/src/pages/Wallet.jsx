@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store/useStore';
-import { withdrawApi } from '../api/services';
-import { Wallet, ArrowDownLeft, ArrowUpRight, RefreshCw, Plus, X, Banknote, Clock } from 'lucide-react';
+import { walletApi, withdrawApi } from '../api/services';
+import { Wallet, ArrowDownLeft, ArrowUpRight, RefreshCw, Plus, X, Banknote, Clock, Copy, CheckCircle } from 'lucide-react';
 
 function fmtCurrency(n) {
   if (n == null) return '—';
@@ -14,13 +14,6 @@ function fmtDateTime(dt) {
     day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
   });
 }
-
-const GATEWAYS = [
-  { value: 'momo',          label: 'MoMo' },
-  { value: 'vnpay',         label: 'VNPay' },
-  { value: 'zalopay',       label: 'ZaloPay' },
-  { value: 'bank_transfer', label: 'Chuyển khoản' },
-];
 
 const QUICK_AMOUNTS = [50000, 100000, 200000, 500000];
 
@@ -36,14 +29,18 @@ const TX_LABEL = {
 };
 
 export default function WalletPage() {
-  const { wallet, walletTransactions, walletTotal, walletPage, fetchWallet, fetchTransactions, topup } = useStore();
+  const { wallet, walletTransactions, walletTotal, walletPage, fetchWallet, fetchTransactions } = useStore();
   const [showTopup, setShowTopup]       = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [amount, setAmount]             = useState('');
-  const [gateway, setGateway]           = useState('momo');
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState('');
   const [success, setSuccess]           = useState('');
+
+  // SePay QR state
+  const [qrData, setQrData]   = useState(null);  // { ref_code, qr_url, bank_account, bank_code, account_name, amount }
+  const [copied, setCopied]   = useState('');
+  const pollRef               = useRef(null);
 
   const [wForm, setWForm]   = useState({ amount: '', bank_name: '', bank_account: '', account_name: '' });
   const [wLoading, setWLoading] = useState(false);
@@ -75,16 +72,43 @@ export default function WalletPage() {
   async function handleTopup(e) {
     e.preventDefault();
     setError(''); setSuccess('');
-    const num = parseInt(amount.replace(/\D/g, ''), 10);
+    const num = parseInt(amount, 10);
+    if (!num || num < 10000) { setError('Nhập số tiền tối thiểu 10,000đ'); return; }
     setLoading(true);
     try {
-      const data = await topup(num, gateway);
-      setSuccess(`Nạp thành công ${fmtCurrency(num)}! Số dư mới: ${fmtCurrency(data.new_balance)}`);
-      setAmount('');
-      setShowTopup(false);
-      fetchTransactions(1);
+      const res = await walletApi.sepayCreate({ amount: num });
+      setQrData(res.data);
+      // Bắt đầu poll trạng thái mỗi 5 giây
+      pollRef.current = setInterval(async () => {
+        try {
+          const s = await walletApi.sepayStatus(res.data.ref_code);
+          if (s.data.status === 'success') {
+            clearInterval(pollRef.current);
+            setQrData(null);
+            setShowTopup(false);
+            setAmount('');
+            setSuccess(`Nạp thành công ${fmtCurrency(s.data.amount)}! Số dư mới: ${fmtCurrency(s.data.balance_after)}`);
+            fetchWallet();
+            fetchTransactions(1);
+          }
+        } catch (_) {}
+      }, 5000);
     } catch (err) { setError(err.message); }
     finally { setLoading(false); }
+  }
+
+  function closeQr() {
+    clearInterval(pollRef.current);
+    setQrData(null);
+    setShowTopup(false);
+    setAmount('');
+  }
+
+  function copyText(text, key) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(key);
+      setTimeout(() => setCopied(''), 2000);
+    });
   }
 
   const totalPages = Math.ceil(walletTotal / 20);
@@ -115,11 +139,11 @@ export default function WalletPage() {
       )}
 
       {}
-      {showTopup && (
+      {showTopup && !qrData && (
         <form onSubmit={handleTopup} className="card border-2 border-blue-200 space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="font-semibold text-slate-800">Nạp tiền vào ví</h3>
-            <button type="button" onClick={() => setShowTopup(false)}><X size={18} className="text-slate-400" /></button>
+            <button type="button" onClick={() => { setShowTopup(false); setError(''); }}><X size={18} className="text-slate-400" /></button>
           </div>
           {error && <p className="text-sm text-red-600">{error}</p>}
 
@@ -156,28 +180,73 @@ export default function WalletPage() {
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Phương thức thanh toán</label>
-            <div className="grid grid-cols-2 gap-2">
-              {GATEWAYS.map(g => (
-                <button
-                  type="button" key={g.value}
-                  onClick={() => setGateway(g.value)}
-                  className={`py-2 rounded-xl text-sm font-medium border transition-colors
-                    ${gateway === g.value
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}
-                >
-                  {g.label}
-                </button>
-              ))}
+          <p className="text-xs text-slate-400 flex items-center gap-1">
+            <img src="https://sepay.vn/favicon.ico" className="w-4 h-4" alt="" onError={e => e.target.style.display='none'} />
+            Thanh toán qua chuyển khoản ngân hàng (SePay)
+          </p>
+
+          <button type="submit" disabled={loading || !amount} className="btn-primary">
+            {loading ? 'Đang tạo QR...' : `Tạo mã QR – ${amount ? fmtCurrency(parseInt(amount, 10)) : ''}`}
+          </button>
+        </form>
+      )}
+
+      {}
+      {qrData && (
+        <div className="card border-2 border-blue-200 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-slate-800">Quét QR để chuyển khoản</h3>
+            <button type="button" onClick={closeQr}><X size={18} className="text-slate-400" /></button>
+          </div>
+
+          <div className="flex justify-center">
+            <img
+              src={qrData.qr_url}
+              alt="QR chuyển khoản"
+              className="w-52 h-52 rounded-xl border border-slate-200"
+            />
+          </div>
+
+          <div className="space-y-2 text-sm">
+            <div className="flex items-center justify-between bg-slate-50 rounded-xl px-3 py-2">
+              <div>
+                <p className="text-xs text-slate-400">Ngân hàng</p>
+                <p className="font-medium text-slate-800">{qrData.bank_code} — {qrData.account_name}</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between bg-slate-50 rounded-xl px-3 py-2">
+              <div>
+                <p className="text-xs text-slate-400">Số tài khoản</p>
+                <p className="font-medium text-slate-800">{qrData.bank_account}</p>
+              </div>
+              <button onClick={() => copyText(qrData.bank_account, 'acc')} className="text-blue-500 hover:text-blue-700 ml-2">
+                {copied === 'acc' ? <CheckCircle size={16} className="text-green-500" /> : <Copy size={16} />}
+              </button>
+            </div>
+            <div className="flex items-center justify-between bg-slate-50 rounded-xl px-3 py-2">
+              <div>
+                <p className="text-xs text-slate-400">Số tiền</p>
+                <p className="font-semibold text-blue-600">{fmtCurrency(qrData.amount)}</p>
+              </div>
+              <button onClick={() => copyText(String(qrData.amount), 'amt')} className="text-blue-500 hover:text-blue-700 ml-2">
+                {copied === 'amt' ? <CheckCircle size={16} className="text-green-500" /> : <Copy size={16} />}
+              </button>
+            </div>
+            <div className="flex items-center justify-between bg-yellow-50 border border-yellow-200 rounded-xl px-3 py-2">
+              <div>
+                <p className="text-xs text-yellow-600 font-semibold">Nội dung chuyển khoản (bắt buộc)</p>
+                <p className="font-bold text-slate-800 tracking-wide">{qrData.ref_code}</p>
+              </div>
+              <button onClick={() => copyText(qrData.ref_code, 'ref')} className="text-blue-500 hover:text-blue-700 ml-2">
+                {copied === 'ref' ? <CheckCircle size={16} className="text-green-500" /> : <Copy size={16} />}
+              </button>
             </div>
           </div>
 
-          <button type="submit" disabled={loading || !amount} className="btn-primary">
-            {loading ? 'Đang xử lý...' : `Nạp ${amount ? fmtCurrency(parseInt(amount, 10)) : ''}`}
-          </button>
-        </form>
+          <p className="text-xs text-slate-400 text-center">
+            Số dư sẽ được cộng tự động sau khi chuyển khoản thành công
+          </p>
+        </div>
       )}
 
       {}
