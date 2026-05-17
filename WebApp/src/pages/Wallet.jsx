@@ -38,9 +38,11 @@ export default function WalletPage() {
   const [success, setSuccess]           = useState('');
 
   // SePay QR state
-  const [qrData, setQrData]   = useState(null);
-  const [copied, setCopied]   = useState('');
-  const pollRef               = useRef(null);
+  const [qrData, setQrData]     = useState(null);
+  const [copied, setCopied]     = useState('');
+  const [checking, setChecking] = useState(false);
+  const [checkMsg, setCheckMsg] = useState({ type: '', text: '' });
+  const pollRef                 = useRef(null);
 
   // Transaction filter
   const _now = new Date();
@@ -123,11 +125,37 @@ export default function WalletPage() {
     finally { setLoading(false); }
   }
 
+  async function handleCheckNow() {
+    if (!qrData || checking) return;
+    setChecking(true);
+    setCheckMsg({ type: '', text: '' });
+    try {
+      const s = await walletApi.sepayStatus(qrData.ref_code);
+      if (s.status === 'success') {
+        clearInterval(pollRef.current);
+        setQrData(null);
+        setShowTopup(false);
+        setAmount('');
+        setCheckMsg({ type: '', text: '' });
+        setSuccess(`Nạp thành công ${fmtCurrency(s.amount)}! Số dư mới: ${fmtCurrency(s.balance_after)}`);
+        fetchWallet();
+        fetchTransactions(1, txFilterRef.current);
+      } else {
+        setCheckMsg({ type: 'pending', text: 'Chưa nhận được thanh toán. Nếu đã chuyển, vui lòng thử lại sau vài giây.' });
+      }
+    } catch (e) {
+      setCheckMsg({ type: 'error', text: e.message || 'Không thể kiểm tra, vui lòng thử lại.' });
+    } finally {
+      setChecking(false);
+    }
+  }
+
   function closeQr() {
     clearInterval(pollRef.current);
     setQrData(null);
     setShowTopup(false);
     setAmount('');
+    setCheckMsg({ type: '', text: '' });
   }
 
   function copyText(text, key) {
@@ -269,8 +297,25 @@ export default function WalletPage() {
             </div>
           </div>
 
-          <p className="text-xs text-slate-400 text-center">
-            Số dư sẽ được cộng tự động sau khi chuyển khoản thành công
+          {checkMsg.text && (
+            <p className={`text-xs text-center px-2 py-1.5 rounded-lg ${
+              checkMsg.type === 'error' ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600'
+            }`}>{checkMsg.text}</p>
+          )}
+
+          <button
+            onClick={handleCheckNow}
+            disabled={checking}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 border-blue-500 text-blue-600 font-semibold text-sm hover:bg-blue-50 disabled:opacity-60 transition-colors"
+          >
+            {checking
+              ? <><RefreshCw size={15} className="animate-spin" /> Đang kiểm tra...</>
+              : <><CheckCircle size={15} /> Kiểm tra giao dịch</>
+            }
+          </button>
+
+          <p className="text-xs text-slate-400 text-center -mt-2">
+            Số dư tự cộng sau khi chuyển khoản xác nhận
           </p>
         </div>
       )}
