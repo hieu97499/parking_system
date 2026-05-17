@@ -352,18 +352,25 @@ router.get('/sepay/status/:refCode', userAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/user/wallet/sepay-webhook — nhận webhook từ SePay (không cần auth)
+// POST /api/user/wallet/sepay-webhook — nhận webhook từ SePay
 router.post('/sepay-webhook', async (req, res, next) => {
   try {
-    // Xác thực API key từ SePay header
-    const authHeader = req.headers['authorization'] || '';
+    // Xác thực API key: SePay có thể gửi qua Authorization header HOẶC body field "code"
     const apiKey     = process.env.SEPAY_API_KEY || '';
-    if (!apiKey || authHeader !== `Apikey ${apiKey}`) {
+    const authHeader = req.headers['authorization'] || '';
+    const bodyCode   = req.body?.code || '';
+    const authorized = !apiKey ||
+      authHeader === `Apikey ${apiKey}` ||
+      bodyCode === apiKey;
+    if (!authorized) {
+      console.log('[Webhook] Auth failed — header:', authHeader, '| body.code:', bodyCode);
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
     const { content, transferAmount, transferType } = req.body;
     // Chỉ xử lý tiền vào
+    console.log('[Webhook] Received — type:', transferType, '| amount:', transferAmount, '| content:', content);
+
     if (transferType !== 'in') return res.json({ success: true });
 
     // Tìm mã tham chiếu trong nội dung chuyển khoản
