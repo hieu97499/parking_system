@@ -44,7 +44,7 @@ router.get('/transactions', userAuth, async (req, res, next) => {
       pool.query(
         `SELECT t.transaction_id AS id, t.transaction_type, t.amount,
                 t.balance_before, t.balance_after, t.payment_gateway,
-                t.status, t.description AS note, t.created_at,
+                t.status, t.description AS note, t.created_at, t.reference_code,
                 ps.entry_time, ps.exit_time, ps.license_plate AS session_plate
          FROM wallet_transactions t
          LEFT JOIN parking_sessions ps ON ps.session_id = t.parking_session_id
@@ -257,18 +257,98 @@ router.post('/sepay/create', userAuth, async (req, res, next) => {
 });
 
 // GET /api/user/wallet/sepay/status/:refCode — kiểm tra trạng thái giao dịch
+// Nếu DB vẫn pending, chủ động query SePay API để xác nhận và xử lý ngay
 router.get('/sepay/status/:refCode', userAuth, async (req, res, next) => {
   try {
     const { refCode } = req.params;
     if (!/^NAP[A-Z0-9]{12}$/.test(refCode)) return res.status(400).json({ error: 'Mã không hợp lệ' });
 
     const result = await pool.query(
-      `SELECT status, amount, balance_after FROM wallet_transactions
+      `SELECT transaction_id, wallet_id, status, amount, balance_after
+       FROM wallet_transactions
        WHERE reference_code = $1 AND user_id = $2`,
       [refCode, req.user.id]
     );
     if (!result.rows[0]) return res.status(404).json({ error: 'Không tìm thấy giao dịch' });
-    res.json(result.rows[0]);
+
+    const tx = result.rows[0];
+
+    // Nếu đã xử lý xong thì trả về luôn
+    if (tx.status !== 'pending') {
+      return res.json({ status: tx.status, amount: tx.amount, balance_after: tx.balance_after });
+    }
+
+    // Còn pending → query SePay API để kiểm tra
+    const apiKey = process.env.SEPAY_API_KEY || '';
+    const bankAccount = process.env.SEPAY_BANK_ACCOUNT || '';
+    let sepayTx = null;
+    if (apiKey && bankAccount) {
+      try {
+        const sepayUrl = `https://my.sepay.vn/userapi/transactions/list?account_number=${bankAccount}&reference_number=${encodeURIComponent(refCode)}&limit=1`;
+        const sepayRes = await fetch(sepayUrl, {
+          headers: { 'Authorization': `Bearer ${apiKey}` }
+        });
+        if (sepayRes.ok) {
+          const sepayData = await sepayRes.json();
+          const list = (sepayData.transactions || sepayData.data || []);
+          sepayTx = list.find(t => (t.transaction_content || '').includes(refCode)) || null;
+        }
+      } catch (_) { /* SePay API không khả dụng, bỏ qua */ }
+    }
+
+    if (!sepayTx) {
+      // SePay chưa có giao dịch này
+      return res.json({ status: 'pending', amount: tx.amount, balance_after: null });
+    }
+
+    // SePay đã nhận tiền → xử lý credit wallet (giống logic webhook)
+    const creditAmount = parseFloat(sepayTx.amount_in) || parseFloat(tx.amount);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const recheck = await client.query(
+        `SELECT status FROM wallet_transactions WHERE transaction_id = $1 FOR UPDATE`,
+        [tx.transaction_id]
+      );
+      if (recheck.rows[0].status !== 'pending') {
+        // Đã xử lý bởi webhook song song
+        await client.query('ROLLBACK');
+        const fresh = await pool.query(
+          `SELECT status, amount, balance_after FROM wallet_transactions WHERE transaction_id = $1`,
+          [tx.transaction_id]
+        );
+        return res.json(fresh.rows[0]);
+      }
+
+      const walletRes = await client.query(
+        'SELECT balance FROM wallets WHERE wallet_id = $1 FOR UPDATE',
+        [tx.wallet_id]
+      );
+      const currentBalance = parseFloat(walletRes.rows[0].balance);
+      const newBalance = currentBalance + creditAmount;
+
+      await client.query(
+        'UPDATE wallets SET balance = $1, updated_at = NOW() WHERE wallet_id = $2',
+        [newBalance, tx.wallet_id]
+      );
+      await client.query(
+        `UPDATE wallet_transactions
+         SET status = 'success', amount = $1, balance_before = $2, balance_after = $3,
+             description = 'Nạp tiền qua SePay – thành công', updated_at = NOW()
+         WHERE transaction_id = $4`,
+        [creditAmount, currentBalance, newBalance, tx.transaction_id]
+      );
+
+      await client.query('COMMIT');
+      return res.json({ status: 'success', amount: creditAmount, balance_after: newBalance });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   } catch (err) { next(err); }
 });
 
