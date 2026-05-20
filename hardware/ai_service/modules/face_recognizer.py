@@ -41,7 +41,6 @@ class FaceRecognizer:
     _instance = None
 
     def __init__(self):
-        self._detector = None
         self._embedder = None
         self._ready    = False
         self._lock     = Lock()
@@ -56,16 +55,8 @@ class FaceRecognizer:
         return cls._instance
 
     def _load_models(self):
-        face_model_path = Path(config.MODELS_DIR) / "face_detector.pt"
-        if not face_model_path.exists():
-            logger.warning(f"Khong tim thay face model: {face_model_path}")
-            return
         try:
-            from ultralytics import YOLO
-            import insightface
             from insightface.app import FaceAnalysis
-
-            self._detector = YOLO(str(face_model_path))
 
             self._embedder = FaceAnalysis(
                 name="buffalo_sc",
@@ -75,43 +66,22 @@ class FaceRecognizer:
             self._embedder.prepare(ctx_id=-1, det_size=(320, 320))
 
             self._ready = True
-            logger.info(f"Face model da load: {face_model_path.name} + InsightFace buffalo_sc (multi-angle mode)")
+            logger.info("InsightFace buffalo_sc loaded (det_500m + ArcFace w600k_mbf)")
         except Exception as e:
-            logger.error(f"Loi load face model: {e}")
+            logger.error(f"Loi load InsightFace: {e}")
 
     def _extract_embedding(self, image: np.ndarray) -> Optional[np.ndarray]:
-        """
-        1. YOLO detect face → crop vùng mặt lớn nhất
-        2. InsightFace trích xuất embedding → normalize
-        """
+        """InsightFace tự detect + trích xuất embedding 512 chiều."""
         if not self._ready:
             return None
         try:
-            results = self._detector(image, verbose=False)
-            boxes   = results[0].boxes
-            if len(boxes) == 0:
-                face_img = image
-            else:
-                best_idx = int(boxes.conf.argmax())
-                x1, y1, x2, y2 = map(int, boxes.xyxy[best_idx])
-
-                h, w = image.shape[:2]
-                pad_x = int((x2 - x1) * 0.1)
-                pad_y = int((y2 - y1) * 0.1)
-                x1 = max(0, x1 - pad_x); y1 = max(0, y1 - pad_y)
-                x2 = min(w, x2 + pad_x); y2 = min(h, y2 + pad_y)
-                face_img = image[y1:y2, x1:x2]
-
-            if face_img.size == 0:
-                return None
-
-            faces = self._embedder.get(face_img)
-            if not faces:
-                faces = self._embedder.get(image)
+            faces = self._embedder.get(image)
             if not faces:
                 return None
 
-            emb = faces[0].embedding
+            # Chọn khuôn mặt có diện tích lớn nhất (gần camera nhất)
+            best = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]))
+            emb = best.embedding
             emb = emb / (np.linalg.norm(emb) + 1e-6)
             return emb.astype(np.float32)
 

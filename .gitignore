@@ -24,6 +24,9 @@ build/
 .env.local
 .env.*.local
 
+# Model weights YOLO (large binary – không commit vào git)
+*.pt
+
 # Uploads (ảnh khuôn mặt, biển số - dữ liệu thực)
 BuildWeb/backend/uploads/
 
