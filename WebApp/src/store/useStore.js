@@ -13,6 +13,16 @@ export const useStore = create((set, get) => ({
   async initAuth() {
     const token = localStorage.getItem('user_token');
     if (!token) { set({ authChecking: false }); return; }
+    // Kiểm tra JWT hết hạn trước khi gọi API (tránh lỗi 401 không cần thiết trong console)
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      if (payload.exp * 1000 < Date.now()) {
+        localStorage.removeItem('user_token');
+        localStorage.removeItem('user_info');
+        set({ isAuthenticated: false, currentUser: null, authChecking: false });
+        return;
+      }
+    } catch { /* token không phải JWT chuẩn, tiếp tục kiểm tra */ }
     try {
       const res = await fetch('/api/user/auth/me', {
         headers: { Authorization: `Bearer ${token}` }

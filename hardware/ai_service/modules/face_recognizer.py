@@ -14,12 +14,14 @@ Cải tiến đa góc:
 """
 
 import os
+import base64
 import cv2
 import numpy as np
 import logging
 from pathlib import Path
 from threading import Lock
 from typing import Optional
+import httpx
 import config
 
 logger = logging.getLogger(__name__)
@@ -116,6 +118,137 @@ class FaceRecognizer:
         except Exception as e:
             logger.error(f"Loi embedding: {e}")
             return None
+
+    def sync_from_backend(self) -> int:
+        """
+        Tải toàn bộ ảnh khuôn mặt đã đăng ký từ backend server về local cache.
+        Gọi trước reload_known_faces() để luôn dùng dữ liệu mới nhất từ server.
+        Returns: số lượng ảnh đã tải, hoặc -1 nếu lỗi kết nối.
+        """
+        backend_url = getattr(config, 'BACKEND_URL', 'http://localhost:4000')
+        api_key     = getattr(config, 'HARDWARE_API_KEY', '')
+        if not backend_url or 'localhost' in backend_url and not api_key:
+            logger.info("sync_from_backend: chạy local, bỏ qua sync")
+            return 0
+        try:
+            resp = httpx.get(
+                backend_url.rstrip('/') + '/api/hardware/faces/download',
+                headers={'x-hardware-key': api_key},
+                timeout=30.0,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"sync_from_backend: server trả {resp.status_code} – dùng cache local")
+                return -1
+            data = resp.json()
+            faces_root = Path(config.FACES_DIR)
+            count = 0
+            for user in data.get('users', []):
+                user_dir = faces_root / user['user_id']
+                user_dir.mkdir(parents=True, exist_ok=True)
+                for img in user.get('images', []):
+                    img_path = user_dir / img['filename']
+                    img_bytes = base64.b64decode(img['image_b64'])
+                    img_path.write_bytes(img_bytes)
+                    count += 1
+            logger.info(f"sync_from_backend: tải {count} ảnh của {len(data.get('users', []))} user")
+            return count
+        except Exception as e:
+            logger.warning(f"sync_from_backend thất bại ({e}) – dùng cache local")
+            return -1
+
+    def upload_embeddings_to_backend(self) -> bool:
+        """
+        Upload embeddings vừa tính được lên server để cache.
+        Lần sau AI Service có thể tải embeddings thay vì ảnh (nhanh hơn nhiều).
+        Returns: True nếu upload thành công.
+        """
+        backend_url = getattr(config, 'BACKEND_URL', 'http://localhost:4000')
+        api_key     = getattr(config, 'HARDWARE_API_KEY', '')
+        if not backend_url or 'localhost' in backend_url:
+            return False
+        with self._lock:
+            snapshot = dict(self._known_embeddings)
+        payload = []
+        for user_id, entries in snapshot.items():
+            for entry in entries:
+                payload.append({
+                    'user_id':   int(user_id) if user_id.isdigit() else user_id,
+                    'angle':     entry['angle'] or 'unknown',
+                    'embedding': entry['emb'].tolist(),
+                })
+        if not payload:
+            return False
+        try:
+            resp = httpx.put(
+                backend_url.rstrip('/') + '/api/hardware/faces/embeddings',
+                json={'embeddings': payload},
+                headers={'x-hardware-key': api_key},
+                timeout=30.0,
+            )
+            if resp.status_code == 200:
+                logger.info(f"upload_embeddings: đã lưu {resp.json().get('saved', 0)} embedding lên server")
+                return True
+            logger.warning(f"upload_embeddings: server trả {resp.status_code}")
+            return False
+        except Exception as e:
+            logger.warning(f"upload_embeddings thất bại ({e})")
+            return False
+
+    def smart_sync(self) -> int:
+        """
+        Chiến lược đồng bộ thông minh:
+          1. Thử tải embeddings đã cache từ DB (JSON nhỏ, ~KB) → nhanh
+          2. Nếu có đủ embeddings → load trực tiếp, KHÔNG cần tải ảnh
+          3. Nếu không có (lần đầu hoặc DB rỗng) → tải ảnh từ server → tính embedding → cache lên DB
+
+        Returns: số user đã load vào bộ nhớ.
+        """
+        backend_url = getattr(config, 'BACKEND_URL', 'http://localhost:4000')
+        api_key     = getattr(config, 'HARDWARE_API_KEY', '')
+
+        # Nếu không có server thì đọc file local như cũ
+        if not backend_url or 'localhost' in backend_url:
+            return self.reload_known_faces()
+
+        # ── BƯỚC 1: Thử đọc embeddings từ DB ──────────────────────────
+        try:
+            resp = httpx.get(
+                backend_url.rstrip('/') + '/api/hardware/faces/embeddings',
+                headers={'x-hardware-key': api_key},
+                timeout=15.0,
+            )
+            if resp.status_code == 200:
+                rows = resp.json().get('embeddings', [])
+                if rows:
+                    new_known: dict[str, list[dict]] = {}
+                    for row in rows:
+                        uid   = str(row['user_id'])
+                        angle = row['angle']
+                        emb   = np.array(row['embedding'], dtype=np.float32)
+                        emb   = emb / (np.linalg.norm(emb) + 1e-6)
+                        entry = {
+                            'angle':  angle if angle in VALID_ANGLES else None,
+                            'emb':    emb,
+                            'weight': ANGLE_WEIGHTS.get(angle, 0.9),
+                        }
+                        new_known.setdefault(uid, []).append(entry)
+                    with self._lock:
+                        self._known_embeddings = new_known
+                    logger.info(
+                        f"smart_sync: tải {len(rows)} embeddings của "
+                        f"{len(new_known)} user từ DB (không cần ảnh)"
+                    )
+                    return len(new_known)
+        except Exception as e:
+            logger.warning(f"smart_sync: lấy embeddings từ DB thất bại ({e})")
+
+        # ── BƯỚC 2: Fallback – tải ảnh → tính embedding → upload DB ──
+        logger.info("smart_sync: không có embedding trong DB – tải ảnh từ server...")
+        self.sync_from_backend()
+        count = self.reload_known_faces()
+        if count > 0:
+            self.upload_embeddings_to_backend()
+        return count
 
     def reload_known_faces(self) -> int:
         """

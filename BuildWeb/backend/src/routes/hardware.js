@@ -6,6 +6,7 @@ const router  = require('express').Router();
 const { pool }= require('../db');
 
 const CAPTURES_DIR = path.join(__dirname, '..', '..', 'uploads', 'captures');
+const FACES_DIR    = path.join(__dirname, '..', '..', 'uploads', 'faces');
 
 function hardwareAuth(req, res, next) {
   const key = req.headers['x-hardware-key'];
@@ -458,6 +459,83 @@ router.post('/upload-image', hardwareAuth, (req, res, next) => {
     fs.writeFileSync(filepath, buffer);
 
     res.json({ path: `captures/${filename}` });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/hardware/faces/embeddings
+ * AI Service tải embeddings đã tính sẵn từ DB (nhanh hơn tải ảnh).
+ * Trả về: { embeddings: [{ user_id, angle, embedding: number[] }] }
+ */
+router.get('/faces/embeddings', hardwareAuth, async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      'SELECT user_id, angle, embedding FROM face_embeddings ORDER BY user_id'
+    );
+    res.json({ embeddings: result.rows });
+  } catch (err) { next(err); }
+});
+
+/**
+ * PUT /api/hardware/faces/embeddings
+ * AI Service upload embeddings vừa tính được lên DB để cache.
+ * Body: { embeddings: [{ user_id, angle, embedding: number[] }] }
+ */
+router.put('/faces/embeddings', hardwareAuth, async (req, res, next) => {
+  const { embeddings } = req.body;
+  if (!Array.isArray(embeddings) || embeddings.length === 0) {
+    return res.status(400).json({ error: 'embeddings array required' });
+  }
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const { user_id, angle, embedding } of embeddings) {
+        if (!user_id || !angle || !Array.isArray(embedding)) continue;
+        await client.query(
+          `INSERT INTO face_embeddings (user_id, angle, embedding, updated_at)
+           VALUES ($1, $2, $3::FLOAT8[], NOW())
+           ON CONFLICT (user_id, angle)
+           DO UPDATE SET embedding = EXCLUDED.embedding, updated_at = NOW()`,
+          [user_id, angle, embedding]
+        );
+      }
+      await client.query('COMMIT');
+      res.json({ saved: embeddings.length });
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/hardware/faces/download
+ * AI Service (máy local) gọi để tải toàn bộ ảnh khuôn mặt đã đăng ký.
+ * Trả về: { users: [{ user_id, images: [{ filename, image_b64 }] }] }
+ */
+router.get('/faces/download', hardwareAuth, (req, res, next) => {
+  try {
+    if (!fs.existsSync(FACES_DIR)) {
+      return res.json({ users: [] });
+    }
+    const users = [];
+    for (const userId of fs.readdirSync(FACES_DIR)) {
+      const userDir = path.join(FACES_DIR, userId);
+      if (!fs.statSync(userDir).isDirectory()) continue;
+      const images = [];
+      for (const file of fs.readdirSync(userDir)) {
+        if (!/\.(jpg|jpeg|png)$/i.test(file)) continue;
+        const buf = fs.readFileSync(path.join(userDir, file));
+        images.push({ filename: file, image_b64: buf.toString('base64') });
+      }
+      if (images.length > 0) users.push({ user_id: userId, images });
+    }
+    res.json({ users });
   } catch (err) {
     next(err);
   }

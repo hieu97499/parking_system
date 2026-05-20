@@ -42,7 +42,6 @@ export default function WalletPage() {
   const [copied, setCopied]     = useState('');
   const [checking, setChecking]       = useState(false);
   const [checkMsg, setCheckMsg]       = useState({ type: '', text: '' });
-  const [checkingTxId, setCheckingTxId] = useState(null);
   const pollRef                        = useRef(null);
 
   // Transaction filter
@@ -454,36 +453,7 @@ export default function WalletPage() {
                     {fmtCurrency(t.amount)}
                   </p>
                   {t.status === 'pending'
-                    ? (
-                      <div className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded-full">Đang xử lý</span>
-                        {t.transaction_type === 'topup' && t.reference_code && (
-                          <button
-                            disabled={checkingTxId === t.id}
-                            onClick={async () => {
-                              setCheckingTxId(t.id);
-                              try {
-                                const s = await walletApi.sepayStatus(t.reference_code);
-                                if (s.status === 'success') {
-                                  setSuccess(`Nạp thành công ${fmtCurrency(s.amount)}! Số dư mới: ${fmtCurrency(s.balance_after)}`);
-                                  fetchWallet();
-                                  fetchTransactions(walletPage, txFilterRef.current);
-                                } else {
-                                  setError('SePay chưa ghi nhận thanh toán này.');
-                                }
-                              } catch { setError('Không thể kiểm tra, thử lại sau.'); }
-                              finally { setCheckingTxId(null); }
-                            }}
-                            className="flex items-center gap-1 text-[10px] text-blue-600 hover:underline disabled:opacity-50"
-                          >
-                            {checkingTxId === t.id
-                              ? <RefreshCw size={10} className="animate-spin" />
-                              : <RefreshCw size={10} />}
-                            Kiểm tra
-                          </button>
-                        )}
-                      </div>
-                    )
+                    ? <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded-full">Đang xử lý</span>
                     : <p className="text-xs text-slate-400">{fmtCurrency(t.balance_after)}</p>
                   }
                 </div>

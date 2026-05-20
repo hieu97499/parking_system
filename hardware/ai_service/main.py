@@ -420,15 +420,24 @@ async def process_exit():
         }
 
 @app.post("/faces/reload")
-def reload_faces():
-    """Reload toàn bộ khuôn mặt đã đăng ký từ uploads/faces/."""
-    count = face_ai.reload_known_faces()
+def reload_faces(force: bool = False):
+    """
+    Smart sync khuôn mặt từ server.
+    - Mặc định: thử tải embeddings từ DB (nhanh), fallback tải ảnh nếu cần.
+    - ?force=true : bỏ qua DB cache, tải lại ảnh và tính embedding mới.
+    """
+    if force:
+        face_ai.sync_from_backend()
+        count = face_ai.reload_known_faces()
+        face_ai.upload_embeddings_to_backend()
+    else:
+        count = face_ai.smart_sync()
     return {"loaded_users": count}
 
 @app.on_event("startup")
 async def startup():
-    logger.info(f"AI Service khởi động – UPLOADS_DIR={config.UPLOADS_DIR}")
-    face_ai.reload_known_faces()
+    logger.info(f"AI Service khởi động – BACKEND_URL={config.BACKEND_URL}")
+    face_ai.smart_sync()
     import asyncio
     loop = asyncio.get_event_loop()
     cam_indices = list({

@@ -20,7 +20,7 @@ router.get('/transactions', userAuth, async (req, res, next) => {
     const offset = (page - 1) * limit;
     const { year, month, type } = req.query;
 
-    const conds  = ['t.user_id = $1'];
+    const conds  = ['t.user_id = $1', `NOT (t.transaction_type = 'topup' AND t.status = 'pending')`];
     const params = [req.user.id];
 
     const y = parseInt(year), m = parseInt(month);
