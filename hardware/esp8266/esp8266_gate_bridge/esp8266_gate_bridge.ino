@@ -9,7 +9,7 @@
 // ═══════════════════════════════════════════════════════════════════
 const char* WIFI_SSID      = "Tép Đến Đây";        // <-- điền tên WiFi
 const char* WIFI_PASSWORD  = "0987654321";   // <-- điền mật khẩu WiFi
-const char* BRIDGE_HOST    = "172.20.10.5";    // <-- IP máy tính chạy bridge
+const char* BRIDGE_HOST    = "172.20.10.8";    // <-- IP máy tính chạy bridge
 const int   BRIDGE_PORT    = 4003;
 
 // I2C addresses của 2 Arduino (phải khớp với #define I2C_ADDRESS trong .ino)

@@ -56,7 +56,15 @@ Write-Host "  ParkingOS da khoi dong xong!" -ForegroundColor White
 Write-Host "  Backend     : http://localhost:4000"
 Write-Host "  AI Service  : http://localhost:5001"
 Write-Host "  Bridge WS   : ws://localhost:4002"
-Write-Host "  Admin Web   : http://localhost:3000"
+Write-Host "  Admin Web   : http://localhost:3000  <-- DUNG URL NAY"
 Write-Host "  WebApp      : http://localhost:5175"
+Write-Host ""
+Write-Host "  [!] Admin phai dung http://localhost:3000 (KHONG dung HTTPS)" -ForegroundColor Yellow
+Write-Host "============================================" -ForegroundColor Green
+Write-Host "  Mo trinh duyet..." -ForegroundColor Cyan
+Start-Process "chrome.exe" -ArgumentList "http://localhost:3000" -ErrorAction SilentlyContinue
+if (-not $?) {
+    Start-Process "msedge.exe" -ArgumentList "http://localhost:3000" -ErrorAction SilentlyContinue
+}
 Write-Host "  Logs        : $LOGS"
 Write-Host "============================================" -ForegroundColor Green

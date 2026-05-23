@@ -54,6 +54,25 @@ app.add_middleware(
     allow_headers  = ["*"],
 )
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+
+class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        if request.method == "OPTIONS":
+            from starlette.responses import Response
+            res = Response()
+            res.headers["Access-Control-Allow-Origin"] = "*"
+            res.headers["Access-Control-Allow-Private-Network"] = "true"
+            res.headers["Access-Control-Allow-Methods"] = "*"
+            res.headers["Access-Control-Allow-Headers"] = "*"
+            return res
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
+app.add_middleware(PrivateNetworkAccessMiddleware)
+
 camera   = CameraManager.get()
 plate_ai = PlateRecognizer.get()
 face_ai  = FaceRecognizer.get()
