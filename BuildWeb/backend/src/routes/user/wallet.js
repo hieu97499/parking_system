@@ -1,6 +1,23 @@
 const router = require('express').Router();
+const jwt    = require('jsonwebtoken');
 const { pool } = require('../../db');
 const userAuth = require('../../middleware/userAuth');
+
+// ── SSE connections cho realtime topup notification ──────────────────────────
+// Map: refCode → { res, timers }
+const topupStreams = new Map();
+
+function pushTopupSuccess(refCode, payload) {
+  const entry = topupStreams.get(refCode);
+  if (!entry) return;
+  try {
+    entry.res.write(`event: topup_success\ndata: ${JSON.stringify(payload)}\n\n`);
+  } catch (_) {}
+  clearTimeout(entry.closeTimer);
+  clearInterval(entry.heartbeat);
+  topupStreams.delete(refCode);
+  try { entry.res.end(); } catch (_) {}
+}
 
 router.get('/', userAuth, async (req, res, next) => {
   try {
@@ -232,6 +249,7 @@ router.post('/sepay/create', userAuth, async (req, res, next) => {
     const shortId = req.user.id.replace(/-/g, '').slice(0, 6).toUpperCase();
     const ts = Date.now().toString().slice(-6);
     const refCode = `NAP${shortId}${ts}`;
+    console.log(`[SePay Create] user=${req.user.id} amount=${numAmount} refCode=${refCode}`);
 
     const walletRes = await pool.query('SELECT wallet_id, balance FROM wallets WHERE user_id = $1', [req.user.id]);
     if (!walletRes.rows[0]) return res.status(404).json({ error: 'Không tìm thấy ví' });
@@ -253,7 +271,11 @@ router.post('/sepay/create', userAuth, async (req, res, next) => {
       `?amount=${numAmount}&addInfo=${encodeURIComponent(refCode)}&accountName=${encodeURIComponent(accountName)}`;
 
     res.json({ ref_code: refCode, amount: numAmount, bank_account: bankAccount, bank_code: bankCode, account_name: accountName, qr_url: qrUrl });
-  } catch (err) { next(err); }
+    console.log(`[SePay Create] OK - refCode=${refCode} inserted and QR returned`);
+  } catch (err) {
+    console.error(`[SePay Create] ERROR:`, err.message);
+    next(err);
+  }
 });
 
 // GET /api/user/wallet/sepay/status/:refCode — kiểm tra trạng thái giao dịch
@@ -279,21 +301,45 @@ router.get('/sepay/status/:refCode', userAuth, async (req, res, next) => {
     }
 
     // Còn pending → query SePay API để kiểm tra
-    const apiKey = process.env.SEPAY_API_KEY || '';
+    // SEPAY_API_TOKEN: token từ my.sepay.vn/companyapi dùng để query giao dịch
+    const apiToken = process.env.SEPAY_API_TOKEN || '';
     const bankAccount = process.env.SEPAY_BANK_ACCOUNT || '';
     let sepayTx = null;
+    console.log(`[SePay Status] refCode=${refCode} | apiToken=${apiToken ? '***set***' : 'EMPTY (cần điền SEPAY_API_TOKEN)'} | bankAccount=${bankAccount || 'EMPTY'}`);
+    const apiKey = apiToken; // alias để không đổi tên biến bên dưới
     if (apiKey && bankAccount) {
       try {
-        const sepayUrl = `https://my.sepay.vn/userapi/transactions/list?account_number=${bankAccount}&reference_number=${encodeURIComponent(refCode)}&limit=1`;
+        // Lọc theo ngày hôm nay + số tiền để giảm số kết quả trả về.
+        // KHÔNG dùng reference_number vì đó là mã tham chiếu của ngân hàng,
+        // không phải nội dung chuyển khoản (transaction_content).
+        const today = new Date().toISOString().slice(0, 10); // yyyy-mm-dd
+        const sepayUrl =
+          `https://my.sepay.vn/userapi/transactions/list` +
+          `?account_number=${bankAccount}` +
+          `&transaction_date_min=${today}` +
+          `&amount_in=${tx.amount}` +
+          `&limit=50`;
+        console.log(`[SePay Status] Gọi API: ${sepayUrl}`);
         const sepayRes = await fetch(sepayUrl, {
           headers: { 'Authorization': `Bearer ${apiKey}` }
         });
+        console.log(`[SePay Status] HTTP status: ${sepayRes.status}`);
         if (sepayRes.ok) {
           const sepayData = await sepayRes.json();
           const list = (sepayData.transactions || sepayData.data || []);
+          console.log(`[SePay Status] Tìm thấy ${list.length} giao dịch, tìm refCode ${refCode} trong transaction_content`);
+          list.forEach(t => console.log(`  - content: "${t.transaction_content}" | amount_in: ${t.amount_in}`));
           sepayTx = list.find(t => (t.transaction_content || '').includes(refCode)) || null;
+          console.log(`[SePay Status] sepayTx found: ${!!sepayTx}`);
+        } else {
+          const errText = await sepayRes.text();
+          console.log(`[SePay Status] API error: ${errText}`);
         }
-      } catch (_) { /* SePay API không khả dụng, bỏ qua */ }
+      } catch (err) {
+        console.log(`[SePay Status] Exception: ${err.message}`);
+      }
+    } else {
+      console.log(`[SePay Status] BỎ QUA gọi API vì thiếu SEPAY_API_TOKEN hoặc SEPAY_BANK_ACCOUNT trong .env`);
     }
 
     if (!sepayTx) {
@@ -342,10 +388,8 @@ router.get('/sepay/status/:refCode', userAuth, async (req, res, next) => {
       );
 
       await client.query('COMMIT');
+      pushTopupSuccess(refCode, { status: 'success', amount: creditAmount, balance_after: newBalance });
       return res.json({ status: 'success', amount: creditAmount, balance_after: newBalance });
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
     } finally {
       client.release();
     }
@@ -355,15 +399,16 @@ router.get('/sepay/status/:refCode', userAuth, async (req, res, next) => {
 // POST /api/user/wallet/sepay-webhook — nhận webhook từ SePay
 router.post('/sepay-webhook', async (req, res, next) => {
   try {
-    // Xác thực API key: SePay có thể gửi qua Authorization header HOẶC body field "code"
-    const apiKey     = process.env.SEPAY_API_KEY || '';
-    const authHeader = req.headers['authorization'] || '';
-    const bodyCode   = req.body?.code || '';
-    const authorized = !apiKey ||
-      authHeader === `Apikey ${apiKey}` ||
-      bodyCode === apiKey;
+    // Xác thực: SePay gửi webhook_secret qua Authorization header HOẶC body field "code"
+    // SEPAY_WEBHOOK_SECRET: lấy tại my.sepay.vn → Tài khoản ngân hàng → Webhook → "Mã xác thực"
+    const webhookSecret = process.env.SEPAY_WEBHOOK_SECRET || process.env.SEPAY_API_KEY || '';
+    const authHeader    = req.headers['authorization'] || '';
+    const bodyCode      = req.body?.code || '';
+    const authorized    = !webhookSecret ||
+      authHeader === `Apikey ${webhookSecret}` ||
+      bodyCode === webhookSecret;
     if (!authorized) {
-      console.log('[Webhook] Auth failed — header:', authHeader, '| body.code:', bodyCode);
+      console.log('[Webhook] Auth failed — header:', authHeader, '| body.code:', bodyCode, '| expected secret:', webhookSecret ? '***' : 'EMPTY');
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
@@ -418,6 +463,8 @@ router.post('/sepay-webhook', async (req, res, next) => {
       );
 
       await client.query('COMMIT');
+      // Đẩy SSE ngay lập tức cho frontend đang chờ
+      pushTopupSuccess(refCode, { status: 'success', amount: creditAmount, balance_after: newBalance });
       res.json({ success: true });
     } catch (err) {
       await client.query('ROLLBACK');
@@ -427,5 +474,161 @@ router.post('/sepay-webhook', async (req, res, next) => {
     }
   } catch (err) { next(err); }
 });
+
+// GET /api/user/wallet/topup-stream/:refCode?token=... — SSE stream cho realtime topup
+// EventSource không gửi được header nên JWT truyền qua query param
+router.get('/topup-stream/:refCode', async (req, res, next) => {
+  try {
+    const token = req.query.token || '';
+    if (!token) return res.status(401).end();
+    let userId;
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded.type !== 'user') return res.status(403).end();
+      userId = decoded.id;
+    } catch { return res.status(401).end(); }
+
+    const { refCode } = req.params;
+    if (!/^NAP[A-Z0-9]{12}$/.test(refCode)) return res.status(400).end();
+
+    // Kiểm tra refCode thuộc user này
+    const txRes = await pool.query(
+      'SELECT status, amount, balance_after FROM wallet_transactions WHERE reference_code = $1 AND user_id = $2',
+      [refCode, userId]
+    );
+    if (!txRes.rows[0]) return res.status(404).end();
+
+    // Nếu đã success (ví dụ poll xử lý trước), trả về ngay
+    if (txRes.rows[0].status === 'success') {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders();
+      res.write(`event: topup_success\ndata: ${JSON.stringify({ status: 'success', amount: txRes.rows[0].amount, balance_after: txRes.rows[0].balance_after })}\n\n`);
+      return res.end();
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    // Heartbeat mỗi 20s để giữ kết nối
+    const heartbeat = setInterval(() => {
+      try { res.write(': ping\n\n'); } catch (_) {}
+    }, 20000);
+
+    // Tự động đóng sau 6 phút (QR hết hạn)
+    const closeTimer = setTimeout(() => {
+      clearInterval(heartbeat);
+      topupStreams.delete(refCode);
+      try { res.write('event: timeout\ndata: {}\n\n'); res.end(); } catch (_) {}
+    }, 6 * 60 * 1000);
+
+    topupStreams.set(refCode, { res, heartbeat, closeTimer });
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      clearTimeout(closeTimer);
+      topupStreams.delete(refCode);
+    });
+  } catch (err) { next(err); }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Background polling: tự động kiểm tra SePay mỗi 8 giây
+// Không cần webhook, không cần user click "Kiểm tra"
+// ──────────────────────────────────────────────────────────────────────────────
+async function pollPendingSePayTransactions() {
+  const apiToken    = process.env.SEPAY_API_TOKEN    || '';
+  const bankAccount = process.env.SEPAY_BANK_ACCOUNT || '';
+  if (!apiToken || !bankAccount) return;
+
+  try {
+    // Lấy các giao dịch pending đã tạo > 10 giây (đủ thời gian chuyển khoản)
+    const pending = await pool.query(
+      `SELECT transaction_id, wallet_id, user_id, amount, reference_code
+       FROM wallet_transactions
+       WHERE payment_gateway = 'sepay' AND status = 'pending'
+         AND created_at < NOW() - INTERVAL '10 seconds'
+       ORDER BY created_at ASC LIMIT 20`
+    );
+    if (!pending.rows.length) return;
+    console.log(`[SePay Poller] Tim thay ${pending.rows.length} pending: ${pending.rows.map(r => r.reference_code).join(', ')}`);
+    const today = new Date().toISOString().slice(0, 10);
+    const sepayRes = await fetch(
+      `https://my.sepay.vn/userapi/transactions/list?account_number=${bankAccount}&transaction_date_min=${today}&limit=100`,
+      { headers: { 'Authorization': `Bearer ${apiToken}` } }
+    );
+    if (!sepayRes.ok) return;
+
+    const sepayData  = await sepayRes.json();
+    const sepayList  = sepayData.transactions || sepayData.data || [];
+    if (!sepayList.length) return;
+
+    for (const tx of pending.rows) {
+      const matched = sepayList.find(t =>
+        (t.transaction_content || '').includes(tx.reference_code)
+      );
+      if (!matched) continue;
+
+      const creditAmount = parseFloat(matched.amount_in) || parseFloat(tx.amount);
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const recheck = await client.query(
+          'SELECT status FROM wallet_transactions WHERE transaction_id = $1 FOR UPDATE',
+          [tx.transaction_id]
+        );
+        if (recheck.rows[0]?.status !== 'pending') {
+          await client.query('ROLLBACK');
+          continue;
+        }
+
+        const walletRes = await client.query(
+          'SELECT balance FROM wallets WHERE wallet_id = $1 FOR UPDATE',
+          [tx.wallet_id]
+        );
+        const currentBalance = parseFloat(walletRes.rows[0].balance);
+        const newBalance     = currentBalance + creditAmount;
+
+        await client.query(
+          'UPDATE wallets SET balance = $1, updated_at = NOW() WHERE wallet_id = $2',
+          [newBalance, tx.wallet_id]
+        );
+        await client.query(
+          `UPDATE wallet_transactions
+           SET status = 'success', amount = $1, balance_before = $2, balance_after = $3,
+               description = N'Nạp tiền qua SePay – thành công', updated_at = NOW()
+           WHERE transaction_id = $4`,
+          [creditAmount, currentBalance, newBalance, tx.transaction_id]
+        );
+        await client.query('COMMIT');
+
+        console.log(`[SePay Poller] +${creditAmount} cho ${tx.reference_code} → số dư: ${newBalance}`);
+        // Đẩy ngay về frontend đang giữ SSE connection
+        pushTopupSuccess(tx.reference_code, {
+          status: 'success',
+          amount: creditAmount,
+          balance_after: newBalance
+        });
+      } catch (pollErr) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error(`[SePay Poller] Lỗi xử lý ${tx.reference_code}:`, pollErr.message);
+      } finally {
+        client.release();
+      }
+    }
+  } catch (_) {
+    // Bỏ qua lỗi mạng tạm thời
+  }
+}
+
+// Khởi động poller (delay 5s để backend kịp khởi động xong)
+setTimeout(() => {
+  setInterval(pollPendingSePayTransactions, 8000);
+  console.log('[SePay Poller] Da khoi dong – kiem tra moi 8 giay');
+}, 5000);
 
 module.exports = router;

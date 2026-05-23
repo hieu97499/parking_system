@@ -40,9 +40,8 @@ export default function WalletPage() {
   // SePay QR state
   const [qrData, setQrData]     = useState(null);
   const [copied, setCopied]     = useState('');
-  const [checking, setChecking]       = useState(false);
-  const [checkMsg, setCheckMsg]       = useState({ type: '', text: '' });
-  const pollRef                        = useRef(null);
+  const pollRef                 = useRef(null);
+  const sseRef                  = useRef(null);
 
   // Transaction filter
   const _now = new Date();
@@ -77,7 +76,10 @@ export default function WalletPage() {
     fetchWallet();
     fetchTransactions(1, txFilterRef.current);
     withdrawApi.history().then(r => setWithdrawals(r || [])).catch(() => {});
-    return () => clearInterval(pollRef.current);
+    return () => {
+      clearInterval(pollRef.current);
+      if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
+    };
   }, []);
 
   async function handleWithdraw(e) {
@@ -97,6 +99,17 @@ export default function WalletPage() {
     finally { setWLoading(false); }
   }
 
+  function onTopupSuccess(amount, balanceAfter) {
+    clearInterval(pollRef.current);
+    if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
+    setQrData(null);
+    setShowTopup(false);
+    setAmount('');
+    setSuccess(`Nạp thành công ${fmtCurrency(amount)}! Số dư mới: ${fmtCurrency(balanceAfter)}`);
+    fetchWallet();
+    fetchTransactions(1, txFilterRef.current);
+  }
+
   async function handleTopup(e) {
     e.preventDefault();
     setError(''); setSuccess('');
@@ -106,56 +119,38 @@ export default function WalletPage() {
     try {
       const res = await walletApi.sepayCreate({ amount: num });
       setQrData(res);
-      // Bắt đầu poll trạng thái mỗi 5 giây
+
+      // ── Kết nối SSE để nhận thông báo ngay khi webhook từ SePay về ────────
+      const token = localStorage.getItem('user_token') || '';
+      const sse = new EventSource(
+        `/api/user/wallet/topup-stream/${res.ref_code}?token=${encodeURIComponent(token)}`
+      );
+      sse.addEventListener('topup_success', (e) => {
+        const data = JSON.parse(e.data);
+        onTopupSuccess(data.amount, data.balance_after);
+      });
+      sse.onerror = () => { sse.close(); sseRef.current = null; };
+      sseRef.current = sse;
+
+      // ── Fallback: poll mỗi 3s nếu SSE không hoạt động ───────────────────
       pollRef.current = setInterval(async () => {
         try {
           const s = await walletApi.sepayStatus(res.ref_code);
           if (s.status === 'success') {
-            clearInterval(pollRef.current);
-            setQrData(null);
-            setShowTopup(false);
-            setAmount('');
-            setSuccess(`Nạp thành công ${fmtCurrency(s.amount)}! Số dư mới: ${fmtCurrency(s.balance_after)}`);
-            fetchWallet();
-            fetchTransactions(1, txFilterRef.current);
+            onTopupSuccess(s.amount, s.balance_after);
           }
         } catch (_) {}
-      }, 5000);
+      }, 3000);
     } catch (err) { setError(err.message); }
     finally { setLoading(false); }
   }
 
-  async function handleCheckNow() {
-    if (!qrData || checking) return;
-    setChecking(true);
-    setCheckMsg({ type: '', text: '' });
-    try {
-      const s = await walletApi.sepayStatus(qrData.ref_code);
-      if (s.status === 'success') {
-        clearInterval(pollRef.current);
-        setQrData(null);
-        setShowTopup(false);
-        setAmount('');
-        setCheckMsg({ type: '', text: '' });
-        setSuccess(`Nạp thành công ${fmtCurrency(s.amount)}! Số dư mới: ${fmtCurrency(s.balance_after)}`);
-        fetchWallet();
-        fetchTransactions(1, txFilterRef.current);
-      } else {
-        setCheckMsg({ type: 'pending', text: 'Chưa nhận được thanh toán. Nếu đã chuyển, vui lòng thử lại sau vài giây.' });
-      }
-    } catch (e) {
-      setCheckMsg({ type: 'error', text: e.message || 'Không thể kiểm tra, vui lòng thử lại.' });
-    } finally {
-      setChecking(false);
-    }
-  }
-
   function closeQr() {
     clearInterval(pollRef.current);
+    if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
     setQrData(null);
     setShowTopup(false);
     setAmount('');
-    setCheckMsg({ type: '', text: '' });
   }
 
   function copyText(text, key) {
@@ -297,25 +292,13 @@ export default function WalletPage() {
             </div>
           </div>
 
-          {checkMsg.text && (
-            <p className={`text-xs text-center px-2 py-1.5 rounded-lg ${
-              checkMsg.type === 'error' ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600'
-            }`}>{checkMsg.text}</p>
-          )}
+          <div className="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-blue-50 border border-blue-200">
+            <RefreshCw size={15} className="animate-spin text-blue-500" />
+            <span className="text-sm text-blue-600 font-medium">Đang chờ xác nhận thanh toán...</span>
+          </div>
 
-          <button
-            onClick={handleCheckNow}
-            disabled={checking}
-            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 border-blue-500 text-blue-600 font-semibold text-sm hover:bg-blue-50 disabled:opacity-60 transition-colors"
-          >
-            {checking
-              ? <><RefreshCw size={15} className="animate-spin" /> Đang kiểm tra...</>
-              : <><CheckCircle size={15} /> Kiểm tra giao dịch</>
-            }
-          </button>
-
-          <p className="text-xs text-slate-400 text-center -mt-2">
-            Số dư tự cộng sau khi chuyển khoản xác nhận
+          <p className="text-xs text-slate-400 text-center">
+            Tiền sẽ được cộng tự động ngay sau khi ngân hàng xác nhận
           </p>
         </div>
       )}
