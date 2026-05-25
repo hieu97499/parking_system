@@ -240,4 +240,23 @@ router.post('/:id/wallet/adjust', auth, async (req, res, next) => {
   }
 });
 
+// Admin: xem các lệnh nạp tiền đang chờ xử lý (pending QR)
+router.get('/topups/pending', auth, async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT wt.transaction_id, wt.reference_code, wt.amount, wt.created_at,
+              u.user_id, u.full_name, u.phone_number, w.balance AS current_balance
+       FROM wallet_transactions wt
+       JOIN wallets w  ON w.wallet_id  = wt.wallet_id
+       JOIN users   u  ON u.user_id    = wt.user_id
+       WHERE wt.payment_gateway = 'sepay' AND wt.status = 'pending'
+       ORDER BY wt.created_at DESC
+       LIMIT 50`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

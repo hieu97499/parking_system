@@ -7,13 +7,15 @@ function Wait-Port {
     param($Port, $Label, $TimeoutSec = 35)
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        try {
-            $t = New-Object System.Net.Sockets.TcpClient
-            $t.Connect("localhost",$Port)
-            $t.Close()
-            Write-Host "  [OK] $Label (port $Port)" -ForegroundColor Green
-            return $true
-        } catch {}
+        foreach ($addr in @("127.0.0.1", "::1")) {
+            try {
+                $t = New-Object System.Net.Sockets.TcpClient
+                $t.Connect($addr, $Port)
+                $t.Close()
+                Write-Host "  [OK] $Label (port $Port)" -ForegroundColor Green
+                return $true
+            } catch {}
+        }
         Start-Sleep -Milliseconds 600
     }
     Write-Host "  [TIMEOUT] $Label (port $Port)" -ForegroundColor Red
@@ -32,7 +34,7 @@ Wait-Port -Port 4000 -Label "Backend" | Out-Null
 
 # ── AI Service ─────────────────────────────────────────────────────────────
 Write-Host "=== AI Service (port 5001) ===" -ForegroundColor Cyan
-Start-Process "cmd.exe" -ArgumentList "/c $VENVPY -m uvicorn main:app --host 0.0.0.0 --port 5001 > $LOGS\ai_service.log 2>&1" -WorkingDirectory "$ROOT\hardware\ai_service" -WindowStyle Minimized
+Start-Process "cmd.exe" -ArgumentList "/c $VENVPY -m uvicorn main:app --host 0.0.0.0 --port 5001 --ssl-keyfile localhost-key.pem --ssl-certfile localhost.pem > $LOGS\ai_service.log 2>&1" -WorkingDirectory "$ROOT\hardware\ai_service" -WindowStyle Minimized
 Wait-Port -Port 5001 -Label "AI Service" -TimeoutSec 60 | Out-Null
 
 # ── Bridge ─────────────────────────────────────────────────────────────────
@@ -54,8 +56,8 @@ Write-Host ""
 Write-Host "============================================" -ForegroundColor Green
 Write-Host "  ParkingOS da khoi dong xong!" -ForegroundColor White
 Write-Host "  Backend     : http://localhost:4000"
-Write-Host "  AI Service  : http://localhost:5001"
-Write-Host "  Bridge WS   : ws://localhost:4002"
+  Write-Host "  AI Service  : https://localhost:5001"
+  Write-Host "  Bridge WS   : wss://localhost:4002"
 Write-Host "  Admin Web   : http://localhost:3000  <-- DUNG URL NAY"
 Write-Host "  WebApp      : http://localhost:5175"
 Write-Host ""

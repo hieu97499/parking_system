@@ -75,6 +75,13 @@ class CameraManager:
 
         self._aliased_indices: set[int] = set()
 
+        self._open_retry_after: dict[int, float] = {}
+
+        self._cam_last_used: dict[int, float] = {}
+
+        # Thời điểm camera được thêm vào stream pool (để tính hold time)
+        self._cam_open_time: dict[int, float] = {}
+
         self._cam_fingerprints: dict[int, bytes] = {}
         logger.info(f"CameraManager khoi dong, che do: {CAPTURE_MODE}")
 
@@ -90,17 +97,45 @@ class CameraManager:
             self._cam_locks[cam_index] = Lock()
         return self._cam_locks[cam_index]
 
-    def _open_cap(self, cam_index: int) -> cv2.VideoCapture:
+    def _open_cap(self, cam_index: int, stream_mode: bool = False) -> cv2.VideoCapture:
         """Mở camera và đặt độ phân giải.
-        Dùng DSHOW trước (ổn định hơn MSMF khi stream đa camera liên tục),
-        fallback sang MSMF nếu DSHOW không hỗ trợ camera cụ thể.
+        stream_mode=True : dùng MSMF thuần (không có DSHOW 3-filter-graph limit),
+                           độ phân giải STREAM_WIDTH×STREAM_HEIGHT.
+        stream_mode=False: dùng MSMF→DSHOW fallback, độ phân giải CAMERA_WIDTH×HEIGHT.
         """
-        delays = [0, 1.5]
+        delays = [0, 1.0, 2.0]
+
+        if stream_mode:
+            target_w   = getattr(config, "STREAM_WIDTH",  640)
+            target_h   = getattr(config, "STREAM_HEIGHT", 480)
+            target_fps = getattr(config, "STREAM_FPS",    10)
+            # MSMF cần lâu (~10-20s) khi đã có cam DSHOW khác mở; DSHOW "by index"
+            # thường fail khi đã có cap DSHOW khác → ưu tiên MSMF với timeout dài.
+            backends = [(cv2.CAP_MSMF, "MSMF", 25.0), (cv2.CAP_DSHOW, "DSHOW", 6.0)]
+        else:
+            target_w   = config.CAMERA_WIDTH
+            target_h   = config.CAMERA_HEIGHT
+            target_fps = getattr(config, "CAMERA_FPS", 15)
+            backends   = [(cv2.CAP_MSMF, "MSMF", 8.0), (cv2.CAP_DSHOW, "DSHOW", 8.0)]
+
+        # Với stream_mode: đặt FOURCC+resolution trong constructor (OpenCV 4.5+)
+        # để camera cấp phát USB buffer ở 640×480 NGAY TỪ ĐẦU, tránh 1920×1080 làm bão hoà USB
+        if stream_mode:
+            ctor_params = [
+                cv2.CAP_PROP_FOURCC,        cv2.VideoWriter_fourcc(*'MJPG'),
+                cv2.CAP_PROP_FRAME_WIDTH,   target_w,
+                cv2.CAP_PROP_FRAME_HEIGHT,  target_h,
+                cv2.CAP_PROP_FPS,           target_fps,
+                cv2.CAP_PROP_BUFFERSIZE,    1,
+            ]
+        else:
+            ctor_params = None
+
         for wait in delays:
             if wait:
                 time.sleep(wait)
-            for backend, name in [(cv2.CAP_DSHOW, "DSHOW"), (cv2.CAP_MSMF, "MSMF")]:
-                cap = self._try_open_cap(cam_index, backend, timeout=3.0)
+            for backend, name, timeout in backends:
+                cap = self._try_open_cap(cam_index, backend, timeout=timeout, open_params=ctor_params)
                 if cap is None or not cap.isOpened():
                     if cap is not None:
                         try: cap.release()
@@ -109,31 +144,46 @@ class CameraManager:
 
                 native_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 native_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                if native_w >= config.CAMERA_WIDTH and native_h >= config.CAMERA_HEIGHT:
-
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  config.CAMERA_WIDTH)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
-
+                # Vẫn set lại sau open để xử lý driver không nhận params trong constructor
+                if stream_mode:
+                    # Ép MJPG TRƯỚC khi set resolution để driver cấp phát USB buffer nén
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH,  target_w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_h)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                cap.set(cv2.CAP_PROP_FPS, getattr(config, "CAMERA_FPS", 15))
+                cap.set(cv2.CAP_PROP_FPS, target_fps)
                 final_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 final_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                logger.info(f"Camera {cam_index} mo OK [{name}] "
-                            f"native={native_w}x{native_h} → {final_w}x{final_h}")
+                fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+                fourcc_str = "".join([chr((fourcc_int >> (8*i)) & 0xFF) for i in range(4)])
+                mode_tag = "stream" if stream_mode else "capture"
+                logger.info(f"Camera {cam_index} mo OK [{name}][{mode_tag}] "
+                            f"native={native_w}x{native_h} → {final_w}x{final_h}@{target_fps}fps fourcc={fourcc_str}")
                 return cap
-        raise RuntimeError(f"Khong mo duoc camera index={cam_index} sau {len(delays)} lan")
+        raise RuntimeError(f"Khong mo duoc camera index={cam_index} sau {len(delays)} lan thay the")
 
-    def _try_open_cap(self, cam_index: int, backend: int, timeout: float = 3.0) -> Optional[cv2.VideoCapture]:
+    def _try_open_cap(
+        self,
+        cam_index: int,
+        backend: int,
+        timeout: float = 3.0,
+        open_params: list | None = None,
+    ) -> Optional[cv2.VideoCapture]:
         """Mở VideoCapture trong thread riêng với timeout để tránh MSMF treo vô hạn.
 
         Với MSMF: nếu thread cũ vẫn đang pending (zombie), bỏ qua và trả None.
         Sau 2 lần MSMF timeout, tự động bỏ qua MSMF cho camera đó.
+        open_params: list các cặp [key, val, ...] truyền thẳng vào VideoCapture constructor
+                     (OpenCV 4.5+) để đặt FOURCC/resolution trước khi camera bắt đầu stream.
         """
         is_msmf = (backend == cv2.CAP_MSMF)
 
         if is_msmf:
 
-            if self._msmf_timeout_count.get(cam_index, 0) >= 2:
+            # Không bao giờ disable MSMF vĩnh viễn: với hardware nhiều cam UVC
+            # cùng model, MSMF là backend duy nhất mở được cam #2,#3 khi cam #0,#1
+            # đã mở DSHOW. Disable MSMF → mất hoàn toàn cam đó.
+            if self._msmf_timeout_count.get(cam_index, 0) >= 999:
                 return None
 
             prev = self._msmf_pending.get(cam_index)
@@ -146,7 +196,10 @@ class CameraManager:
 
         def _do():
             try:
-                result[0] = cv2.VideoCapture(cam_index, backend)
+                if open_params:
+                    result[0] = cv2.VideoCapture(cam_index, backend, open_params)
+                else:
+                    result[0] = cv2.VideoCapture(cam_index, backend)
             except Exception as e:
                 exc[0] = e
 
@@ -159,6 +212,9 @@ class CameraManager:
             logger.warning(f"Camera {cam_index} backend={backend} open timeout after {timeout}s")
             if is_msmf:
                 self._msmf_timeout_count[cam_index] = self._msmf_timeout_count.get(cam_index, 0) + 1
+                # Xoá pending để lần retry tiếp theo tạo thread mới
+                # (thread cũ là daemon, process exit vẫn sạch)
+                self._msmf_pending.pop(cam_index, None)
             return None
         if exc[0]:
             return None
@@ -200,13 +256,13 @@ class CameraManager:
     @staticmethod
     def _fingerprints_aliased(fp1: bytes, fp2: bytes) -> bool:
         """So sánh 2 fingerprint – True nếu rất giống nhau (aliased MSMF).
-        Ngưỡng 0.5% – chỉ bắt aliased thật sự (diff ≈ 0).
-        Hai camera khác nhau cùng chụp 1 phòng luôn có noise RGB khác nhau, diff > ngưỡng."""
+        Ngưỡng 8 – chỉ bắt aliased thật sự (diff ≈ 0, cùng thiết bị vật lý).
+        Hai camera khác nhau cùng phòng luôn có noise RGB/angle khác nhau, diff > 8."""
         if len(fp1) != len(fp2):
             return False
         diff = sum(abs(a - b) for a, b in zip(fp1, fp2))
 
-        return diff < 81
+        return diff < 8
 
     def _capture_lazy(self, cam_index: int, retries: int) -> Optional[bytes]:
         """Mở → warm-up → chụp → đóng.
@@ -357,6 +413,12 @@ class CameraManager:
                 try:
                     ret, frame = cap.read()
                     if ret and frame is not None:
+                        self._cam_last_used[cam_index] = time.time()
+                        sw = getattr(config, "STREAM_WIDTH",  640)
+                        sh = getattr(config, "STREAM_HEIGHT", 480)
+                        h, w = frame.shape[:2]
+                        if w > sw or h > sh:
+                            frame = cv2.resize(frame, (sw, sh))
                         _, buf = cv2.imencode(".jpg", frame,
                                              [cv2.IMWRITE_JPEG_QUALITY, 80])
                         return buf.tobytes()
@@ -374,8 +436,61 @@ class CameraManager:
 
                 cap = self._cameras.get(cam_index)
                 if not cap or not cap.isOpened():
+                    retry_after = self._open_retry_after.get(cam_index, 0)
+                    if time.time() < retry_after:
+                        return None
+
+                    # 4 cam cùng VID_1908&PID_3283 (chip generic UVC). DirectShow chỉ
+                    # enumerate được 2 filter graph hợp lệ (cam 0 & 2); cam 1 & 3 alias
+                    # → chỉ mở được khi cam đối xứng đã đóng. MSMF không hỗ trợ chip này.
+                    # Giải pháp: luân phiên 1 ↔ 3, giữ tối thiểu 6s mỗi cam.
+                    HOLD_TIME = 6.0
+                    CONFLICTS = {1: 3, 3: 1}
+                    MAX_CAMS  = 4
+                    if len(self._cameras) >= MAX_CAMS:
+                        _now = time.time()
+                        conflict_idx = CONFLICTS.get(cam_index)
+                        if conflict_idx is not None and conflict_idx in self._cameras:
+                            # Phải evict cam conflict (alias) trước khi mở cam này
+                            held = _now - self._cam_open_time.get(conflict_idx, _now)
+                            if held < HOLD_TIME:
+                                self._open_retry_after[cam_index] = _now + max(2.0, HOLD_TIME - held)
+                                return None
+                            evict_idx = conflict_idx
+                        else:
+                            evictable = [
+                                idx for idx in self._cameras
+                                if _now - self._cam_open_time.get(idx, _now) >= HOLD_TIME
+                            ]
+                            if not evictable:
+                                wait_min = min(
+                                    HOLD_TIME - (_now - self._cam_open_time.get(idx, _now))
+                                    for idx in self._cameras
+                                )
+                                self._open_retry_after[cam_index] = _now + max(2.0, wait_min)
+                                return None
+                            evict_idx = min(
+                                evictable,
+                                key=lambda i: self._cam_last_used.get(i, 0)
+                            )
+                        held = _now - self._cam_open_time.get(evict_idx, _now)
+                        logger.info(
+                            f"Smart evict cam{evict_idx} (held {held:.0f}s) "
+                            f"→ nhường DSHOW slot cho cam{cam_index}"
+                        )
+                        evict_lock = self._get_cam_lock(evict_idx)
+                        with evict_lock:
+                            try:
+                                self._cameras[evict_idx].release()
+                            except Exception:
+                                pass
+                            del self._cameras[evict_idx]
+                        self._cam_open_time.pop(evict_idx, None)
+                        # Cho cam bị evict retry sau 2s
+                        self._open_retry_after[evict_idx] = _now + 2.0
+
                     try:
-                        cap = self._open_cap(cam_index)
+                        cap = self._open_cap(cam_index, stream_mode=True)
                         self._warmup(cap)
 
                         ret_a, frame_a = cap.read()
@@ -391,10 +506,12 @@ class CameraManager:
                                     )
                                     return None
                             self._cam_fingerprints[cam_index] = fp_new
+                        self._open_retry_after.pop(cam_index, None)
                         self._cameras[cam_index] = cap
+                        self._cam_open_time[cam_index] = time.time()
                     except Exception as e:
-                        logger.warning(f"stream_frame init cam{cam_index}: {e}")
-                        self._aliased_indices.add(cam_index)
+                        logger.warning(f"stream_frame init cam{cam_index}: {e} – retry in 15s")
+                        self._open_retry_after[cam_index] = time.time() + 15.0
                         return None
 
         with cam_lock:
@@ -403,6 +520,11 @@ class CameraManager:
                 try:
                     ret, frame = cap.read()
                     if ret and frame is not None:
+                        sw = getattr(config, "STREAM_WIDTH",  640)
+                        sh = getattr(config, "STREAM_HEIGHT", 480)
+                        h, w = frame.shape[:2]
+                        if w > sw or h > sh:
+                            frame = cv2.resize(frame, (sw, sh))
                         _, buf = cv2.imencode(".jpg", frame,
                                              [cv2.IMWRITE_JPEG_QUALITY, 80])
                         return buf.tobytes()

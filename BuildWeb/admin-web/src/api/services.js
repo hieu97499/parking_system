@@ -33,6 +33,7 @@ export const usersApi = {
   updateVehicle: (userId, vehicleId, data) => api.put(`/users/${userId}/vehicles/${vehicleId}`, data),
   adjustWallet: (userId, amount, description) => api.post(`/users/${userId}/wallet/adjust`, { amount, description }),
   deleteFaceImage: (userId, imageId) => api.delete(`/users/${userId}/face-images/${imageId}`),
+  pendingTopups: () => api.get('/users/topups/pending'),
 };
 
 export const devicesApi = {

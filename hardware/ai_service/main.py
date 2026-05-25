@@ -28,6 +28,8 @@ from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
 
 import config
 from modules.camera_manager  import CameraManager, get_placeholder_jpeg
@@ -47,30 +49,19 @@ logger = logging.getLogger("ai_service")
 
 app = FastAPI(title="Parking AI Service", version="1.0.0")
 
+class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins  = ["*"],
     allow_methods  = ["*"],
     allow_headers  = ["*"],
+    expose_headers = ["*"],
 )
-
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request as StarletteRequest
-
-class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: StarletteRequest, call_next):
-        if request.method == "OPTIONS":
-            from starlette.responses import Response
-            res = Response()
-            res.headers["Access-Control-Allow-Origin"] = "*"
-            res.headers["Access-Control-Allow-Private-Network"] = "true"
-            res.headers["Access-Control-Allow-Methods"] = "*"
-            res.headers["Access-Control-Allow-Headers"] = "*"
-            return res
-        response = await call_next(request)
-        response.headers["Access-Control-Allow-Private-Network"] = "true"
-        return response
-
 app.add_middleware(PrivateNetworkAccessMiddleware)
 
 camera   = CameraManager.get()
@@ -221,12 +212,12 @@ def _mjpeg_generator(cam_index: int):
     """
     boundary = b"--frame"
 
-    time.sleep(cam_index * 0.025)
+    time.sleep(cam_index * 1.5)
     try:
         while True:
             data = camera.stream_frame(cam_index)
             if data:
-                fps_delay = 1.0 / getattr(config, "CAMERA_FPS", 15)
+                fps_delay = 1.0 / getattr(config, "STREAM_FPS", 10)
             else:
 
                 data = get_placeholder_jpeg()

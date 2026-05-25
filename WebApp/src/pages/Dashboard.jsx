@@ -25,13 +25,21 @@ export default function Dashboard() {
     fetchWallet();
     fetchActiveSessions();
     fetchVehicles();
+
+    const interval = setInterval(fetchWallet, 30000);
+    const onFocus = () => fetchWallet();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
-  const threshold = wallet?.low_balance_threshold;
+  const threshold = parseFloat(wallet?.low_balance_threshold);
   const isLowBalance = wallet != null
-    && typeof wallet.balance === 'number'
-    && typeof threshold === 'number' && threshold > 0
-    && wallet.balance < threshold;
+    && parseFloat(wallet.balance) > 0
+    && threshold > 0
+    && parseFloat(wallet.balance) < threshold;
 
   return (
     <div className="p-4 space-y-4">

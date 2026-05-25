@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore'
-import { dashboardApi, reportsApi } from '../api/services'
+import { dashboardApi, reportsApi, usersApi } from '../api/services'
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import {
-  ParkingSquare, Car, CheckCircle, BanknoteIcon,
+  ParkingSquare, Car, CheckCircle, BanknoteIcon, Clock, RefreshCw,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -29,19 +29,36 @@ export default function Dashboard() {
   const [tick, setTick] = useState(0)
   const [dailyReports, setDailyReports] = useState([])
   const [hourlyTraffic, setHourlyTraffic] = useState([])
+  const [pendingTopups, setPendingTopups] = useState([])
+  const [topupRefreshing, setTopupRefreshing] = useState(false)
 
   useEffect(() => {
     fetchDashboardStats()
     fetchActiveSessions()
     fetchAlerts()
     loadCharts()
+    loadPendingTopups()
     const t = setInterval(() => {
       setTick(v => v + 1)
       fetchDashboardStats()
       fetchActiveSessions()
-    }, 30000)
+      loadPendingTopups()
+    }, 15000)
     return () => clearInterval(t)
   }, [])
+
+  async function loadPendingTopups() {
+    try {
+      const data = await usersApi.pendingTopups()
+      setPendingTopups(Array.isArray(data) ? data : [])
+    } catch {}
+  }
+
+  async function refreshTopups() {
+    setTopupRefreshing(true)
+    await loadPendingTopups()
+    setTopupRefreshing(false)
+  }
 
   async function loadCharts() {
     try {
@@ -259,6 +276,64 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* ── Nạp tiền đang chờ xử lý ── */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div className="flex items-center gap-2">
+            <Clock size={16} className="text-amber-500" />
+            <h2 className="font-semibold text-gray-800">Nạp tiền đang chờ xử lý</h2>
+            {pendingTopups.length > 0 && (
+              <span className="bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                {pendingTopups.length}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={refreshTopups}
+            className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+            title="Làm mới"
+          >
+            <RefreshCw size={13} className={topupRefreshing ? 'animate-spin' : ''} />
+            Làm mới
+          </button>
+        </div>
+        {pendingTopups.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-8">Không có lệnh nạp tiền nào đang chờ</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-gray-50 text-xs text-gray-500 uppercase font-medium">
+                <tr>
+                  <th className="px-5 py-3 text-left">Tài khoản</th>
+                  <th className="px-5 py-3 text-left">Số điện thoại</th>
+                  <th className="px-5 py-3 text-left">Mã tham chiếu</th>
+                  <th className="px-5 py-3 text-right">Số tiền</th>
+                  <th className="px-5 py-3 text-right">Số dư hiện tại</th>
+                  <th className="px-5 py-3 text-left">Thời gian tạo</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {pendingTopups.map(t => (
+                  <tr key={t.transaction_id} className="hover:bg-amber-50">
+                    <td className="px-5 py-3 font-medium text-gray-800">{t.full_name || '—'}</td>
+                    <td className="px-5 py-3 text-gray-700">{t.phone_number}</td>
+                    <td className="px-5 py-3 font-mono text-xs text-gray-600">{t.reference_code}</td>
+                    <td className="px-5 py-3 text-right font-semibold text-amber-600">
+                      {Number(t.amount).toLocaleString('vi-VN')}đ
+                    </td>
+                    <td className="px-5 py-3 text-right text-gray-600">
+                      {Number(t.current_balance).toLocaleString('vi-VN')}đ
+                    </td>
+                    <td className="px-5 py-3 text-gray-500 text-xs">
+                      {new Date(t.created_at).toLocaleString('vi-VN', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
     </div>
   )

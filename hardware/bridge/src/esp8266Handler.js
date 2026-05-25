@@ -39,6 +39,13 @@ class Esp8266Handler extends EventEmitter {
       });
 
       socket.on('close', () => {
+        // Chỉ clear state nếu socket close là socket hiện tại
+        // (tránh race: khi ESP reconnect, socket cũ bị destroy sẽ fire 'close'
+        //  SAU khi this._client đã được gán = socket mới)
+        if (this._client !== socket) {
+          console.log('[ESP8266] Socket cũ đã đóng (đã có kết nối mới thay thế)');
+          return;
+        }
         console.warn('[ESP8266] Mất kết nối');
         this._client     = null;
         this._entryReady = false;

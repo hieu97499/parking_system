@@ -1,11 +1,13 @@
 
 
+const https = require('https');
 const axios = require('axios');
 const cfg   = require('./config');
 
 const http = axios.create({
   baseURL: cfg.AI_SERVICE_URL,
   timeout: cfg.AI_TIMEOUT_MS,
+  httpsAgent: new https.Agent({ rejectUnauthorized: false }),
 });
 
 async function processEntry() {

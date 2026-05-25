@@ -1,6 +1,10 @@
 
-#include <Wire.h>
+#include <SoftwareSerial.h>
 #include <Servo.h>
+
+// UART với ESP8266: RX=pin2 ← ESP TX(D2/GPIO4)
+//                  TX=pin3 → ESP RX(D1/GPIO5)
+SoftwareSerial espSerial(2, 3);
 
 // ─── Pin definitions ────────────────────────────────────────────────────────
 const int TRIG_PIN  = 9;
@@ -8,7 +12,6 @@ const int ECHO_PIN  = 10;
 const int SERVO_PIN = 6;
 
 // ─── Config ─────────────────────────────────────────────────────────────────
-#define I2C_ADDRESS         0x09
 const int  BARRIER_OPEN_DEG    = 90;
 const int  BARRIER_CLOSE_DEG   = 0;
 const int  DETECT_DISTANCE_CM  = 80;
@@ -19,29 +22,14 @@ const int  DEBOUNCE_COUNT      = 3;
 
 // ─── State ──────────────────────────────────────────────────────────────────
 Servo barrierServo;
-bool      isBarrierOpen    = false;
-bool      vehicleDetected  = false;
-unsigned long lastMeasure  = 0;
-unsigned long clearAt      = 0;
-unsigned long openedAt     = 0;
-bool      pendingClose     = false;
-int       debounceCount    = 0;
-
-// Lệnh từ I2C (set trong ISR, xử lý trong loop)
-volatile uint8_t pendingCmd = 0xFF;
-
-// ─── I2C callbacks (ISR – chỉ đọc/ghi biến volatile) ────────────────────────
-void onRequest() {
-  uint8_t status = 0x04;  // bit2 = always ready
-  if (vehicleDetected) status |= 0x01;
-  if (isBarrierOpen)   status |= 0x02;
-  Wire.write(status);
-}
-
-void onReceive(int /*numBytes*/) {
-  if (Wire.available()) pendingCmd = Wire.read();
-  while (Wire.available()) Wire.read();
-}
+bool      isBarrierOpen   = false;
+bool      vehicleDetected = false;
+unsigned long lastMeasure = 0;
+unsigned long clearAt     = 0;
+unsigned long openedAt    = 0;
+bool      pendingClose    = false;
+int       debounceCount   = 0;
+String    rxBuf           = "";
 
 // ─── Functions ───────────────────────────────────────────────────────────────
 float measureDistance() {
@@ -50,7 +38,7 @@ float measureDistance() {
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
-  // pulseInLong() cho phép interrupt I2C chạy trong khi đo
+  // pulseInLong cho phép interrupt SoftwareSerial chạy trong khi đo
   long duration = pulseInLong(ECHO_PIN, HIGH, 30000UL);
   if (duration == 0) return 999.0f;
   return (duration * 0.034f) / 2.0f;
@@ -69,25 +57,43 @@ void closeBarrier() {
   pendingClose  = false;
 }
 
+// ─── Handle command from ESP ─────────────────────────────────────────────────
+void handleCommand(const String& cmd) {
+  if      (cmd == "OPEN")  { openBarrier();  espSerial.println("OK:OPEN"); }
+  else if (cmd == "CLOSE") { closeBarrier(); espSerial.println("OK:CLOSE"); }
+  else if (cmd == "PING")  { espSerial.println("PONG"); }
+}
+
 void setup() {
+  Serial.begin(115200);
+  espSerial.begin(9600);
+
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
 
   barrierServo.attach(SERVO_PIN);
   closeBarrier();
 
-  Wire.begin(I2C_ADDRESS);
-  Wire.onRequest(onRequest);
-  Wire.onReceive(onReceive);
+  delay(500);
+  espSerial.println("READY");
+  Serial.println("[Exit] UART mode ready");
 }
 
 void loop() {
-  // 1) Xử lý lệnh từ I2C
-  uint8_t cmd = pendingCmd;
-  if (cmd != 0xFF) {
-    pendingCmd = 0xFF;
-    if      (cmd == 0x01) openBarrier();
-    else if (cmd == 0x02) closeBarrier();
+  // 1) Đọc lệnh từ ESP
+  while (espSerial.available()) {
+    char c = (char)espSerial.read();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      rxBuf.trim();
+      if (rxBuf.length() > 0) {
+        Serial.print("[RX] "); Serial.println(rxBuf);
+        handleCommand(rxBuf);
+      }
+      rxBuf = "";
+    } else {
+      rxBuf += c;
+    }
   }
 
   // 2) Đo khoảng cách với debounce
@@ -101,20 +107,28 @@ void loop() {
       debounceCount = 0;
     } else {
       debounceCount++;
-      if (debounceCount < DEBOUNCE_COUNT) goto autoClose;
-      debounceCount   = 0;
-      vehicleDetected = raw;
-      if (!raw && isBarrierOpen) {
-        pendingClose = true;
-        clearAt      = now;
+      if (debounceCount >= DEBOUNCE_COUNT) {
+        debounceCount   = 0;
+        vehicleDetected = raw;
+        if (raw) {
+          espSerial.println("SENSOR:DETECTED");
+          Serial.println("[Sensor] DETECTED");
+        } else {
+          espSerial.println("SENSOR:CLEAR");
+          Serial.println("[Sensor] CLEAR");
+          if (isBarrierOpen) {
+            pendingClose = true;
+            clearAt = now;
+          }
+        }
       }
     }
   }
 
-  autoClose:
   // 3) Tự động đóng sau khi xe qua
   if (pendingClose && (millis() - clearAt >= AUTO_CLOSE_DELAY_MS)) {
     closeBarrier();
+    pendingClose = false;
     return;
   }
 

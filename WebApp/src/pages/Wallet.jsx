@@ -153,6 +153,20 @@ export default function WalletPage() {
     setAmount('');
   }
 
+  const [manualChecking, setManualChecking] = useState(false);
+
+  async function handleManualCheck() {
+    if (!qrData?.ref_code || manualChecking) return;
+    setManualChecking(true);
+    try {
+      const s = await walletApi.sepayStatus(qrData.ref_code);
+      if (s.status === 'success') {
+        onTopupSuccess(s.amount, s.balance_after);
+      }
+    } catch (_) {}
+    finally { setManualChecking(false); }
+  }
+
   function copyText(text, key) {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(key);
@@ -296,6 +310,16 @@ export default function WalletPage() {
             <RefreshCw size={15} className="animate-spin text-blue-500" />
             <span className="text-sm text-blue-600 font-medium">Đang chờ xác nhận thanh toán...</span>
           </div>
+
+          <button
+            type="button"
+            onClick={handleManualCheck}
+            disabled={manualChecking}
+            className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl border border-slate-200 text-sm text-slate-500 hover:bg-slate-50 disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={manualChecking ? 'animate-spin' : ''} />
+            {manualChecking ? 'Đang kiểm tra...' : 'Đã chuyển khoản? Kiểm tra ngay'}
+          </button>
 
           <p className="text-xs text-slate-400 text-center">
             Tiền sẽ được cộng tự động ngay sau khi ngân hàng xác nhận

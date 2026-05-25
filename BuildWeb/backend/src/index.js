@@ -13,8 +13,8 @@ const app = express();
 
 app.use(helmet());
 const allowedOrigins = [
-  process.env.CORS_ORIGIN || 'http://localhost:3000',
-  process.env.CORS_USER_ORIGIN || 'http://localhost:5175',
+  ...(process.env.CORS_ORIGIN || 'http://localhost:3000').split(',').map(s => s.trim()),
+  ...(process.env.CORS_USER_ORIGIN || 'http://localhost:5175').split(',').map(s => s.trim()),
 ];
 app.use(cors({
   origin: (origin, callback) => {
@@ -50,6 +50,7 @@ app.use('/api/alerts', require('./routes/alerts'));
 app.use('/api/config', require('./routes/config'));
 app.use('/api/barriers',  require('./routes/barriers'));
 app.use('/api/hardware',  require('./routes/hardware'));
+app.use('/api/ai',        require('./routes/aiProxy'));
 
 app.use('/api/user/auth/login', loginLimiter);
 app.use('/api/user/auth', require('./routes/user/auth'));
@@ -83,6 +84,64 @@ app.use((req, res) => {
 app.use(errorHandler);
 
 const httpServer = http.createServer(app);
+
+// ── WebSocket proxy: /bridge-ws → ws://localhost:4002 ───────────────────────
+// Cho phép admin-web kết nối Bridge qua HTTPS domain (tránh mixed-content).
+{
+  const { WebSocket: WS, WebSocketServer } = require('ws');
+  const proxyWss = new WebSocketServer({ noServer: true });
+
+  const ALLOWED_ORIGINS = [
+    process.env.CORS_ORIGIN      || 'http://localhost:3000',
+    process.env.CORS_USER_ORIGIN || 'http://localhost:5175',
+    'https://admin-baixethongminh.duckdns.org',
+  ];
+
+  httpServer.on('upgrade', (req, socket, head) => {
+    try {
+      const { pathname } = new URL(req.url, 'http://localhost');
+      if (pathname !== '/bridge-ws') return; // socket.io tự xử lý /socket.io
+
+      const origin = req.headers.origin || '';
+      const ok = !origin
+        || ALLOWED_ORIGINS.includes(origin)
+        || /^http:\/\/localhost:\d+$/.test(origin);
+      if (!ok) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+
+      proxyWss.handleUpgrade(req, socket, head, (clientWs) => {
+        const BRIDGE_URL = process.env.BRIDGE_WS_URL || 'wss://localhost:4002';
+        const bridgeWs   = new WS(BRIDGE_URL, { rejectUnauthorized: false }); // self-signed cert OK (localhost)
+
+        clientWs.on('message', (data) => {
+          if (bridgeWs.readyState === WS.OPEN) bridgeWs.send(data);
+        });
+        bridgeWs.on('message', (data) => {
+          if (clientWs.readyState === WS.OPEN) clientWs.send(data);
+        });
+
+        const close = () => {
+          try { if (clientWs.readyState <= WS.OPEN) clientWs.close(); } catch (_) {}
+          try { if (bridgeWs.readyState  <= WS.OPEN) bridgeWs.close();  } catch (_) {}
+        };
+        clientWs.on('close', close);
+        bridgeWs.on('close', close);
+        clientWs.on('error', close);
+        bridgeWs.on('error', (e) => {
+          console.error('[WS-proxy] Bridge error:', e.message);
+          close();
+        });
+      });
+    } catch (e) {
+      console.error('[WS-proxy] upgrade error:', e.message);
+      socket.destroy();
+    }
+  });
+}
+
 const io = new Server(httpServer, {
   cors: {
     origin: [

@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Car, Users, Cpu, FileText,
-  BarChart2, AlertTriangle, Settings, LogOut, ParkingSquare, Link2,
+  BarChart2, AlertTriangle, Settings, LogOut, ParkingSquare, Link2, Cctv,
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import clsx from 'clsx'
@@ -13,6 +13,7 @@ const mainNavItems = [
   { to: '/events',  icon: FileText,        label: 'Nhật ký sự kiện' },
   { to: '/reports', icon: BarChart2,       label: 'Báo cáo' },
   { to: '/alerts',  icon: AlertTriangle,   label: 'Cảnh báo' },
+  { to: '/cameras', icon: Cctv,             label: 'Camera trực tiếp' },
   { to: '/config',  icon: Settings,        label: 'Cấu hình' },
 ]
 

@@ -396,6 +396,37 @@ router.get('/sepay/status/:refCode', userAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ─── Helper: credit ví từ refCode khi DB không có pending record ───────────
+// Dùng khi backend restart giữa chừng khiến INSERT pending bị mất.
+async function creditByRefCode(refCode, creditAmount, client) {
+  // refCode = NAP + 6-char userPrefix + 6-char timestamp
+  const userPrefix = refCode.slice(3, 9).toLowerCase();
+  const userRes = await client.query(
+    `SELECT u.user_id, w.wallet_id, w.balance
+     FROM users u JOIN wallets w ON w.user_id = u.user_id
+     WHERE LOWER(REPLACE(u.user_id::text, '-', '')) LIKE $1
+     LIMIT 1`,
+    [`${userPrefix}%`]
+  );
+  if (!userRes.rows[0]) return null;
+  const u = userRes.rows[0];
+  const balBefore = parseFloat(u.balance);
+  const balAfter  = balBefore + creditAmount;
+  await client.query(
+    'UPDATE wallets SET balance = $1, updated_at = NOW() WHERE wallet_id = $2',
+    [balAfter, u.wallet_id]
+  );
+  await client.query(
+    `INSERT INTO wallet_transactions
+       (wallet_id, user_id, transaction_type, amount, balance_before, balance_after,
+        payment_gateway, status, description, reference_code)
+     VALUES ($1,$2,'topup',$3,$4,$5,'sepay','success','Nap tien qua SePay – khoi phuc',$6)`,
+    [u.wallet_id, u.user_id, creditAmount, balBefore, balAfter, refCode]
+  );
+  console.log(`[SePay] Khoi phuc refCode ${refCode} → user ${u.user_id} | +${creditAmount} → ${balAfter}`);
+  return { user_id: u.user_id, wallet_id: u.wallet_id, balance_after: balAfter };
+}
+
 // POST /api/user/wallet/sepay-webhook — nhận webhook từ SePay
 router.post('/sepay-webhook', async (req, res, next) => {
   try {
@@ -434,9 +465,34 @@ router.post('/sepay-webhook', async (req, res, next) => {
          FOR UPDATE`,
         [refCode]
       );
+
+      // Không có pending record → có thể backend đã restart mất INSERT
+      // Kiểm tra xem đã xử lý trước đó chưa (status=success)
       if (!txRes.rows[0]) {
-        await client.query('ROLLBACK');
-        return res.json({ success: true }); // đã xử lý hoặc không tìm thấy
+        const doneRes = await client.query(
+          `SELECT 1 FROM wallet_transactions WHERE reference_code = $1 AND status = 'success'`,
+          [refCode]
+        );
+        if (doneRes.rows[0]) {
+          // Đã xử lý rồi (idempotent)
+          await client.query('ROLLBACK');
+          return res.json({ success: true });
+        }
+        // Chưa có record gì → khôi phục từ refCode prefix
+        const creditAmount = parseFloat(transferAmount);
+        if (!creditAmount || creditAmount <= 0) {
+          await client.query('ROLLBACK');
+          return res.json({ success: true });
+        }
+        const recovered = await creditByRefCode(refCode, creditAmount, client);
+        if (recovered) {
+          await client.query('COMMIT');
+          pushTopupSuccess(refCode, { status: 'success', amount: creditAmount, balance_after: recovered.balance_after });
+        } else {
+          await client.query('ROLLBACK');
+          console.log(`[Webhook] Khong tim thay user cho refCode ${refCode}`);
+        }
+        return res.json({ success: true });
       }
 
       const tx = txRes.rows[0];
@@ -545,7 +601,17 @@ async function pollPendingSePayTransactions() {
   if (!apiToken || !bankAccount) return;
 
   try {
-    // Lấy các giao dịch pending đã tạo > 10 giây (đủ thời gian chuyển khoản)
+    const today = new Date().toISOString().slice(0, 10);
+    const sepayRes = await fetch(
+      `https://my.sepay.vn/userapi/transactions/list?account_number=${bankAccount}&transaction_date_min=${today}&limit=100`,
+      { headers: { 'Authorization': `Bearer ${apiToken}` } }
+    );
+    if (!sepayRes.ok) return;
+    const sepayData = await sepayRes.json();
+    const sepayList = sepayData.transactions || sepayData.data || [];
+    if (!sepayList.length) return;
+
+    // ── Pha 1: xử lý các pending record trong DB ─────────────────────────
     const pending = await pool.query(
       `SELECT transaction_id, wallet_id, user_id, amount, reference_code
        FROM wallet_transactions
@@ -553,18 +619,10 @@ async function pollPendingSePayTransactions() {
          AND created_at < NOW() - INTERVAL '10 seconds'
        ORDER BY created_at ASC LIMIT 20`
     );
-    if (!pending.rows.length) return;
-    console.log(`[SePay Poller] Tim thay ${pending.rows.length} pending: ${pending.rows.map(r => r.reference_code).join(', ')}`);
-    const today = new Date().toISOString().slice(0, 10);
-    const sepayRes = await fetch(
-      `https://my.sepay.vn/userapi/transactions/list?account_number=${bankAccount}&transaction_date_min=${today}&limit=100`,
-      { headers: { 'Authorization': `Bearer ${apiToken}` } }
-    );
-    if (!sepayRes.ok) return;
-
-    const sepayData  = await sepayRes.json();
-    const sepayList  = sepayData.transactions || sepayData.data || [];
-    if (!sepayList.length) return;
+    if (!pending.rows.length && !sepayList.length) return;
+    if (pending.rows.length) {
+      console.log(`[SePay Poller] Tim thay ${pending.rows.length} pending: ${pending.rows.map(r => r.reference_code).join(', ')}`);
+    }
 
     for (const tx of pending.rows) {
       const matched = sepayList.find(t =>
@@ -615,13 +673,54 @@ async function pollPendingSePayTransactions() {
         });
       } catch (pollErr) {
         await client.query('ROLLBACK').catch(() => {});
-        console.error(`[SePay Poller] Lỗi xử lý ${tx.reference_code}:`, pollErr.message);
+        console.error(`[SePay Poller] Loi xu ly ${tx.reference_code}:`, pollErr.message);
+      } finally {
+        client.release();
+      }
+    }
+
+    // ── Pha 2: khôi phục các giao dịch SePay NAP* không có record trong DB ──
+    // Bắt đúng trường hợp backend restart giữa chừng mất INSERT
+    const napTxs = sepayList.filter(t => /NAP[A-Z0-9]{12}/.test(t.transaction_content || ''));
+    for (const st of napTxs) {
+      const m = (st.transaction_content || '').match(/NAP[A-Z0-9]{12}/);
+      if (!m) continue;
+      const refCode = m[0];
+      const existing = await pool.query(
+        `SELECT 1 FROM wallet_transactions WHERE reference_code = $1`,
+        [refCode]
+      );
+      if (existing.rows.length) continue; // đã có record (pending hoặc success)
+
+      const creditAmount = parseFloat(st.amount_in);
+      if (!creditAmount || creditAmount <= 0) continue;
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        // Double-check trong transaction
+        const recheck = await client.query(
+          `SELECT 1 FROM wallet_transactions WHERE reference_code = $1`,
+          [refCode]
+        );
+        if (recheck.rows.length) { await client.query('ROLLBACK'); continue; }
+
+        const recovered = await creditByRefCode(refCode, creditAmount, client);
+        if (recovered) {
+          await client.query('COMMIT');
+          console.log(`[SePay Poller] Orphan khoi phuc: ${refCode} +${creditAmount}`);
+          pushTopupSuccess(refCode, { status: 'success', amount: creditAmount, balance_after: recovered.balance_after });
+        } else {
+          await client.query('ROLLBACK');
+        }
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
       } finally {
         client.release();
       }
     }
   } catch (_) {
-    // Bỏ qua lỗi mạng tạm thời
+    // Bo qua loi mang tam thoi
   }
 }
 

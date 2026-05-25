@@ -6,8 +6,10 @@ import {
 } from "lucide-react"
 import { devicesApi } from "../api/services"
 
-const AI_URL    = import.meta.env.VITE_AI_URL    || "http://localhost:5001"
-const BRIDGE_WS = import.meta.env.VITE_BRIDGE_WS || "ws://localhost:4002"
+const AI_URL       = import.meta.env.VITE_AI_URL       || "https://localhost:5001"
+const STREAM_URL   = import.meta.env.VITE_STREAM_URL   || "https://localhost:4002"
+const BRIDGE_WS    = import.meta.env.VITE_BRIDGE_WS    || "wss://localhost:4002"
+const SHOW_CAMERAS = import.meta.env.VITE_SHOW_CAMERAS === "true"
 
 const DEFAULT_ASSIGNMENT = { entry_plate: 0, entry_face: 1, exit_plate: 2, exit_face: 3 }
 
@@ -289,14 +291,16 @@ function GateColumn({ gate, assignment, dispatchRef, onSend }) {
       </div>
 
       {}
-      <div className="grid grid-cols-2 gap-2" style={{ minHeight: "22vh" }}>
-        <CameraBox camIndex={camP} label={isEntry ? "Biển số vào" : "Biển số ra"}
-          accent={accent1} resultType="plate" result={plateResult}
-          fullscreen={fullP} onToggleFullscreen={() => setFullP(p => !p)} />
-        <CameraBox camIndex={camF} label={isEntry ? "Khuôn mặt vào" : "Khuôn mặt ra"}
-          accent={accent2} resultType="face" result={faceResult}
-          fullscreen={fullF} onToggleFullscreen={() => setFullF(p => !p)} />
-      </div>
+      {SHOW_CAMERAS && (
+        <div className="grid grid-cols-2 gap-2" style={{ minHeight: "22vh" }}>
+          <CameraBox camIndex={camP} label={isEntry ? "Biển số vào" : "Biển số ra"}
+            accent={accent1} resultType="plate" result={plateResult}
+            fullscreen={fullP} onToggleFullscreen={() => setFullP(p => !p)} />
+          <CameraBox camIndex={camF} label={isEntry ? "Khuôn mặt vào" : "Khuôn mặt ra"}
+            accent={accent2} resultType="face" result={faceResult}
+            fullscreen={fullF} onToggleFullscreen={() => setFullF(p => !p)} />
+        </div>
+      )}
 
       {}
       <div className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-colors duration-300 ${stateCfg.bg}`}>
@@ -434,7 +438,7 @@ function CameraBox({ camIndex, label, accent, resultType, result, fullscreen, on
         <img
           ref={imgRef}
           key={retryKey}
-          src={`${AI_URL}/stream/${camIndex}`}
+          src={`${STREAM_URL}/stream/${camIndex}`}
           alt={label}
           className="w-full h-full object-cover"
         />
@@ -473,6 +477,7 @@ export default function Devices() {
   }, [])
 
   useEffect(() => {
+    if (!SHOW_CAMERAS) return
     fetch(`${AI_URL}/cameras/assignment`, { signal: AbortSignal.timeout(3000) })
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d) setAssignment(d) })
@@ -480,6 +485,7 @@ export default function Devices() {
   }, [])
 
   useEffect(() => {
+    if (!SHOW_CAMERAS) return
     let alive = true
     const ping = async () => {
       try { const r = await fetch(`${AI_URL}/health`, { signal: AbortSignal.timeout(2500) }); if (alive) setAiOnline(r.ok) }
@@ -546,15 +552,19 @@ export default function Devices() {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <div className={`flex items-center gap-1.5 text-xs ${aiOnline    ? "text-emerald-600" : "text-slate-400"}`}>
-            <Activity size={13} /> AI {aiOnline ? "online" : "offline"}
-          </div>
+          {SHOW_CAMERAS && (
+            <div className={`flex items-center gap-1.5 text-xs ${aiOnline ? "text-emerald-600" : "text-slate-400"}`}>
+              <Activity size={13} /> AI {aiOnline ? "online" : "offline"}
+            </div>
+          )}
           <div className={`flex items-center gap-1.5 text-xs ${bridgeConn ? "text-emerald-600" : "text-slate-400"}`}>
             <Wifi size={13} /> Bridge {bridgeConn ? "kết nối" : "offline"}
           </div>
-          <div className="relative">
-            <CamAssignPanel assignment={assignment} onSaved={setAssignment} />
-          </div>
+          {SHOW_CAMERAS && (
+            <div className="relative">
+              <CamAssignPanel assignment={assignment} onSaved={setAssignment} />
+            </div>
+          )}
         </div>
       </div>
 

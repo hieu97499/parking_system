@@ -23,6 +23,11 @@ CAMERA_HEIGHT = int(os.getenv("CAMERA_HEIGHT", "720"))
 
 CAMERA_FPS     = int(os.getenv("CAMERA_FPS",    "15"))
 
+# Độ phân giải và FPS riêng cho MJPEG stream (thấp hơn để 4 cam cùng tồn tại trên USB bus)
+STREAM_WIDTH   = int(os.getenv("STREAM_WIDTH",  "640"))
+STREAM_HEIGHT  = int(os.getenv("STREAM_HEIGHT", "480"))
+STREAM_FPS     = int(os.getenv("STREAM_FPS",    "10"))
+
 CAMERA_STARTUP_DELAY = float(os.getenv("CAMERA_STARTUP_DELAY", "3.0"))
 
 CAPTURE_MODE   = os.getenv("CAPTURE_MODE", "LAZY")

@@ -11,6 +11,7 @@ import EventLogs from './pages/EventLogs'
 import Reports from './pages/Reports'
 import Alerts from './pages/Alerts'
 import Config from './pages/Config'
+import CameraView from './pages/CameraView'
 
 function Protected({ children }) {
   const auth = useStore(s => s.isAuthenticated)
@@ -46,6 +47,7 @@ export default function App() {
           <Route path="reports" element={<Reports />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="config" element={<Config />} />
+          <Route path="cameras" element={<CameraView />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
