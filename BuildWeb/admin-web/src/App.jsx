@@ -6,12 +6,10 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Sessions from './pages/Sessions'
 import Users from './pages/Users'
-import Devices from './pages/Devices'
 import EventLogs from './pages/EventLogs'
 import Reports from './pages/Reports'
 import Alerts from './pages/Alerts'
 import Config from './pages/Config'
-import CameraView from './pages/CameraView'
 
 function Protected({ children }) {
   const auth = useStore(s => s.isAuthenticated)
@@ -42,12 +40,10 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="sessions" element={<Sessions />} />
           <Route path="users" element={<Users />} />
-          <Route path="devices" element={<Devices />} />
           <Route path="events" element={<EventLogs />} />
           <Route path="reports" element={<Reports />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="config" element={<Config />} />
-          <Route path="cameras" element={<CameraView />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

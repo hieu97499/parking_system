@@ -11,7 +11,7 @@ const STREAM_URL   = import.meta.env.VITE_STREAM_URL   || "https://localhost:400
 const BRIDGE_WS    = import.meta.env.VITE_BRIDGE_WS    || "wss://localhost:4002"
 const SHOW_CAMERAS = import.meta.env.VITE_SHOW_CAMERAS === "true"
 
-const DEFAULT_ASSIGNMENT = { entry_plate: 0, entry_face: 1, exit_plate: 2, exit_face: 3 }
+const DEFAULT_ASSIGNMENT = { entry_plate: 0, entry_face: 1, exit_plate: 0, exit_face: 1 }
 
 const accentCfg = {
   blue:   { ring: "ring-blue-500",   badge: "bg-blue-600",   dot: "bg-blue-400",   grad: "from-blue-900/80"   },
