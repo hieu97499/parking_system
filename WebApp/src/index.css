@@ -3,8 +3,21 @@
 @tailwind utilities;
 
 @layer base {
-  html { font-family: 'Segoe UI', system-ui, sans-serif; }
-  body { @apply bg-slate-50 text-slate-800; }
+  html {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    /* Ngăn nội dung tràn ngang trên mobile */
+    overflow-x: hidden;
+  }
+  body {
+    @apply bg-slate-50 text-slate-800;
+    overflow-x: hidden;
+    /* Đảm bảo chiều cao đủ cả vùng safe-area của iPhone (notch/home indicator) */
+    min-height: 100dvh;
+  }
+  /* iOS Safari tự động zoom khi input font-size < 16px → bầt buộc 16px */
+  input, textarea, select {
+    font-size: 16px !important;
+  }
 }
 
 @layer components {
