@@ -48,7 +48,8 @@ const registerLimiter = rateLimit({
   message: { error: 'Quá nhiều yêu cầu đăng ký, thử lại sau 1 giờ' },
 });
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 

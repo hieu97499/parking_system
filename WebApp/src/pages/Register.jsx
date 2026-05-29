@@ -61,6 +61,26 @@ function readFileAsBase64(file) {
   });
 }
 
+// Nén ảnh về tối đa 800px, JPEG 0.75 để giảm kích thước gửi lên server
+function compressImage(dataUrl, maxSize = 800, quality = 0.75) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxSize || height > maxSize) {
+        if (width > height) { height = Math.round(height * maxSize / width); width = maxSize; }
+        else { width = Math.round(width * maxSize / height); height = maxSize; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(dataUrl); // fallback nếu lỗi
+    img.src = dataUrl;
+  });
+}
+
 function StepIndicator({ step, total }) {
   return (
     <div className="flex items-center justify-center gap-2 mb-6">
@@ -210,7 +230,8 @@ function Step2({ faceImages, setFaceImages, onNext, onBack }) {
     if (!file) return;
     setCapturing(true);
     try {
-      const dataUrl = await readFileAsBase64(file);
+      const raw = await readFileAsBase64(file);
+      const dataUrl = await compressImage(raw, 800, 0.80);
       setFaceImages(prev => ({ ...prev, [activeAngle]: dataUrl }));
       const idx = FACE_ANGLES.findIndex(a => a.key === activeAngle);
       if (idx < FACE_ANGLES.length - 1) setActiveAngle(FACE_ANGLES[idx + 1].key);
@@ -226,16 +247,16 @@ function Step2({ faceImages, setFaceImages, onNext, onBack }) {
   }
 
   // Chụp từ camera
-  function captureFromCamera() {
+  async function captureFromCamera() {
     const video  = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas) return;
     canvas.width  = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext('2d').drawImage(video, 0, 0);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    const raw = canvas.toDataURL('image/jpeg', 0.85);
+    const dataUrl = await compressImage(raw, 800, 0.80);
     setFaceImages(prev => ({ ...prev, [activeAngle]: dataUrl }));
-    // Tự động chuyển góc tiếp theo
     const idx = FACE_ANGLES.findIndex(a => a.key === activeAngle);
     if (idx < FACE_ANGLES.length - 1) {
       setActiveAngle(FACE_ANGLES[idx + 1].key);
@@ -250,7 +271,8 @@ function Step2({ faceImages, setFaceImages, onNext, onBack }) {
     if (!file.type.startsWith('image/')) return;
     setCapturing(true);
     try {
-      const dataUrl = await readFileAsBase64(file);
+      const raw = await readFileAsBase64(file);
+      const dataUrl = await compressImage(raw, 800, 0.80);
       setFaceImages(prev => ({ ...prev, [activeAngle]: dataUrl }));
       const idx = FACE_ANGLES.findIndex(a => a.key === activeAngle);
       if (idx < FACE_ANGLES.length - 1) setActiveAngle(FACE_ANGLES[idx + 1].key);
@@ -410,7 +432,8 @@ function Step3({ vehicle, setVehicle, onBack, onSubmit, loading, error }) {
     const file = e.target.files?.[0];
     fileRef.current.value = '';
     if (!file) return;
-    const dataUrl = await readFileAsBase64(file);
+    const raw = await readFileAsBase64(file);
+    const dataUrl = await compressImage(raw, 1000, 0.82); // biển số cần rõ hơn → 1000px
     setVehicle(v => ({ ...v, plate_image_data: dataUrl }));
     setPlatePreview(dataUrl);
   }
