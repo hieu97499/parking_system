@@ -170,6 +170,7 @@ function Step2({ faceImages, setFaceImages, onNext, onBack }) {
   const videoRef  = useRef(null);
   const canvasRef = useRef(null);
   const fileRef   = useRef(null);
+  const cameraInputRef = useRef(null); // fallback cho mobile HTTP (không có getUserMedia)
 
   const doneCount   = Object.keys(faceImages).length;
   const currentAngle = FACE_ANGLES.find(a => a.key === activeAngle);
@@ -178,6 +179,13 @@ function Step2({ faceImages, setFaceImages, onNext, onBack }) {
   // Mở camera
   async function startCamera() {
     setCameraError('');
+
+    // Trên mobile qua HTTP, navigator.mediaDevices không khả dụng → dùng input capture
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      cameraInputRef.current?.click();
+      return;
+    }
+
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: 640, height: 480 }
@@ -185,8 +193,29 @@ function Step2({ faceImages, setFaceImages, onNext, onBack }) {
       setStream(s);
       setCameraMode(true);
       setTimeout(() => { if (videoRef.current) videoRef.current.srcObject = s; }, 100);
-    } catch {
-      setCameraError('Không thể mở camera. Hãy dùng nút tải ảnh lên thay thế.');
+    } catch (err) {
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setCameraError('Camera bị từ chối quyền. Vui lòng cho phép camera trong cài đặt trình duyệt.');
+      } else {
+        // Fallback sang input capture (hoạt động trên cả HTTP)
+        cameraInputRef.current?.click();
+      }
+    }
+  }
+
+  // Xử lý ảnh từ input capture (mobile fallback)
+  async function handleCameraCapture(e) {
+    const file = e.target.files?.[0];
+    cameraInputRef.current.value = '';
+    if (!file) return;
+    setCapturing(true);
+    try {
+      const dataUrl = await readFileAsBase64(file);
+      setFaceImages(prev => ({ ...prev, [activeAngle]: dataUrl }));
+      const idx = FACE_ANGLES.findIndex(a => a.key === activeAngle);
+      if (idx < FACE_ANGLES.length - 1) setActiveAngle(FACE_ANGLES[idx + 1].key);
+    } finally {
+      setCapturing(false);
     }
   }
 
@@ -323,6 +352,9 @@ function Step2({ faceImages, setFaceImages, onNext, onBack }) {
       {/* Nút chụp / upload */}
       <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp"
         className="hidden" onChange={handleFileUpload} />
+      {/* Fallback camera cho mobile HTTP (getUserMedia không khả dụng) */}
+      <input ref={cameraInputRef} type="file" accept="image/jpeg,image/png,image/webp"
+        capture="user" className="hidden" onChange={handleCameraCapture} />
 
       <div className="flex gap-2 mb-4">
         {cameraMode ? (
@@ -479,16 +511,40 @@ export default function Register() {
     setError('');
     setLoading(true);
     try {
-      // 1. Tạo tài khoản
-      const data = await registerFn({
-        full_name:    form.full_name.trim(),
-        phone_number: form.phone_number.trim(),
-        password:     form.password,
-      });
-      if (data?.token) {
-        localStorage.setItem('user_token', data.token);
-        if (data.user) localStorage.setItem('user_info', JSON.stringify(data.user));
+      // 1. Tạo tài khoản (hoặc đăng nhập lại nếu đã tạo ở lần thử trước)
+      try {
+        const data = await registerFn({
+          full_name:    form.full_name.trim(),
+          phone_number: form.phone_number.trim(),
+          password:     form.password,
+        });
+        if (data?.token) {
+          localStorage.setItem('user_token', data.token);
+          if (data.user) localStorage.setItem('user_info', JSON.stringify(data.user));
+        }
+      } catch (regErr) {
+        // Nếu số điện thoại đã tồn tại (do lần thử trước thành công nhưng setup bị lỗi),
+        // thử đăng nhập lại với thông tin đã nhập để tiếp tục setup
+        const msg = regErr?.message || '';
+        if (msg.includes('đã được đăng ký') || msg.includes('already') || msg.includes('409')) {
+          try {
+            const loginData = await authApi.login(
+              form.phone_number.replace(/[\s\-\.]/g, '').trim(),
+              form.password,
+            );
+            if (loginData?.token) {
+              localStorage.setItem('user_token', loginData.token);
+              if (loginData.user) localStorage.setItem('user_info', JSON.stringify(loginData.user));
+            }
+          } catch {
+            // Đăng nhập thất bại → mật khẩu sai hoặc lỗi khác
+            throw new Error('Số điện thoại đã được đăng ký với mật khẩu khác. Vui lòng đăng nhập.');
+          }
+        } else {
+          throw regErr;
+        }
       }
+
       // 2. Setup ảnh mặt + xe
       await authApi.setup({
         face_images:      Object.keys(faceImages).length > 0 ? faceImages : undefined,

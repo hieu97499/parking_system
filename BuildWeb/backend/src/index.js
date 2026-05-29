@@ -11,6 +11,10 @@ const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 
+// Trust nginx/proxy để rate limiter dùng IP thật của client
+// (không trust proxy → req.ip = 127.0.0.1 → tất cả user cùng bucket)
+app.set('trust proxy', 1);
+
 app.use(helmet());
 const allowedOrigins = [
   ...(process.env.CORS_ORIGIN || 'http://localhost:3000').split(',').map(s => s.trim()),
@@ -31,7 +35,17 @@ app.use(cors({
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: { error: 'Quá nhiều lần đăng nhập, thử lại sau 15 phút' },
+});
+
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 giờ
+  max: 10,                   // 10 lần đăng ký/IP/giờ
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Quá nhiều yêu cầu đăng ký, thử lại sau 1 giờ' },
 });
 
 app.use(express.json({ limit: '10mb' }));
@@ -53,6 +67,7 @@ app.use('/api/hardware',  require('./routes/hardware'));
 app.use('/api/ai',        require('./routes/aiProxy'));
 
 app.use('/api/user/auth/login', loginLimiter);
+app.use('/api/user/auth/register', registerLimiter);
 app.use('/api/user/auth', require('./routes/user/auth'));
 app.use('/api/user/vehicles', require('./routes/user/vehicles'));
 app.use('/api/user/wallet', require('./routes/user/wallet'));
