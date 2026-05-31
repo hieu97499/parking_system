@@ -29,6 +29,7 @@ export const usersApi = {
   get: (id) => api.get(`/users/${id}`),
   update: (id, data) => api.put(`/users/${id}`, data),
   toggleActive: (id) => api.patch(`/users/${id}/toggle-active`),
+  remove: (id) => api.delete(`/users/${id}`),
   faceImages: (id) => api.get(`/users/${id}/face-images`),
   updateVehicle: (userId, vehicleId, data) => api.put(`/users/${userId}/vehicles/${vehicleId}`, data),
   adjustWallet: (userId, amount, description) => api.post(`/users/${userId}/wallet/adjust`, { amount, description }),

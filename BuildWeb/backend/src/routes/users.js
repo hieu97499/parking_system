@@ -151,6 +151,60 @@ router.delete('/:id/face-images/:imageId', auth, async (req, res, next) => {
   }
 });
 
+// Xóa toàn bộ tài khoản và mọi dữ liệu liên quan
+router.delete('/:id', auth, async (req, res, next) => {
+  const userId = req.params.id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Chặn xóa nếu còn phiên đang gửi xe
+    const active = await client.query(
+      `SELECT COUNT(*)::int AS n FROM parking_sessions WHERE user_id = $1 AND status = 'active'`,
+      [userId]
+    );
+    if (active.rows[0].n > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Người dùng còn xe đang trong bãi, không thể xóa' });
+    }
+
+    // Xóa các bảng không CASCADE (parking_sessions, wallet_transactions giữ FK NO ACTION)
+    await client.query('DELETE FROM wallet_transactions WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM parking_sessions    WHERE user_id = $1', [userId]);
+
+    // Xóa user; các bảng còn lại (vehicles, wallets, face_*, monthly_passes, notifications,
+    // fcm_tokens, refresh_tokens, authorizations, withdraw_requests, user_face_images)
+    // sẽ CASCADE tự động theo schema.
+    const del = await client.query(
+      'DELETE FROM users WHERE user_id = $1 RETURNING user_id, full_name',
+      [userId]
+    );
+    if (!del.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Không tìm thấy người dùng' });
+    }
+
+    await client.query('COMMIT');
+
+    // Xóa thư mục ảnh khuôn mặt local (best-effort)
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const faceDir = path.join(__dirname, '..', '..', 'uploads', 'faces', userId);
+      if (fs.existsSync(faceDir)) fs.rmSync(faceDir, { recursive: true, force: true });
+      const plateDir = path.join(__dirname, '..', '..', 'uploads', 'plates', userId);
+      if (fs.existsSync(plateDir)) fs.rmSync(plateDir, { recursive: true, force: true });
+    } catch (_) {}
+
+    res.json({ message: `Đã xóa tài khoản ${del.rows[0].full_name}`, user_id: del.rows[0].user_id });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
+});
+
 router.patch('/:id/toggle-active', auth, async (req, res, next) => {
   try {
     const result = await pool.query(`

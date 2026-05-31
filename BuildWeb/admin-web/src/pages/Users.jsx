@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { usersApi } from '../api/services'
 import {
   Search, X, User, Wallet, Car, Clock,
-  ChevronDown, ChevronUp, Edit2, Save, AlertCircle, CheckCircle, ScanFace, Check, Pencil, PlusCircle, MinusCircle
+  ChevronDown, ChevronUp, Edit2, Save, AlertCircle, CheckCircle, ScanFace, Check, Pencil, PlusCircle, MinusCircle, Trash2
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -139,6 +139,25 @@ export default function Users() {
     }
   }
 
+  const [confirmDelete, setConfirmDelete] = useState(null)  // user object hoặc null
+  const [deleting, setDeleting] = useState(false)
+  const deleteUser = async () => {
+    if (!confirmDelete) return
+    const uid = confirmDelete.id || confirmDelete.user_id
+    setDeleting(true)
+    try {
+      await usersApi.remove(uid)
+      setUsers(prev => prev.filter(u => (u.id || u.user_id) !== uid))
+      setToast({ msg: `Đã xóa tài khoản ${confirmDelete.full_name}`, type: 'success' })
+      setConfirmDelete(null)
+      setDetail(null)
+    } catch (e) {
+      setToast({ msg: e.message, type: 'error' })
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   const startEditVehicle = (v) => {
     setEditVehicleId(v.id)
     setVehicleEditForm({ license_plate: v.license_plate, nickname: v.nickname || '' })
@@ -183,6 +202,42 @@ export default function Users() {
   return (
     <div className="space-y-5">
       {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => !deleting && setConfirmDelete(null)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start gap-3 mb-4">
+              <div className="p-2 bg-rose-100 rounded-lg">
+                <AlertCircle className="text-rose-600" size={22} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-bold text-gray-900">Xóa vĩnh viễn tài khoản?</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Toàn bộ dữ liệu của <span className="font-semibold">{confirmDelete.full_name}</span> ({confirmDelete.phone_number}) sẽ bị xóa:
+                  ví, giao dịch, xe, vé tháng, ảnh khuôn mặt, lịch sử gửi xe, thông báo…
+                </p>
+                <p className="text-sm text-rose-600 font-medium mt-2">Hành động này không thể hoàn tác.</p>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                disabled={deleting}
+                className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Hủy
+              </button>
+              <button
+                onClick={deleteUser}
+                disabled={deleting}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
+              >
+                <Trash2 size={14} /> {deleting ? 'Đang xóa…' : 'Xóa vĩnh viễn'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {}
       <div className="flex gap-3 items-center">
@@ -352,6 +407,12 @@ export default function Users() {
                         )}
                       >
                         {detail.is_active ? 'Vô hiệu hóa tài khoản' : 'Kích hoạt tài khoản'}
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(detail)}
+                        className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg border bg-rose-600 text-white hover:bg-rose-700 border-rose-600 transition-colors"
+                      >
+                        <Trash2 size={14} /> Xóa tài khoản
                       </button>
                     </div>
                   ) : (
