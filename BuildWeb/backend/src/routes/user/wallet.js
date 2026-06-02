@@ -449,7 +449,67 @@ router.post('/sepay-webhook', async (req, res, next) => {
 
     if (transferType !== 'in') return res.json({ success: true });
 
-    // Tìm mã tham chiếu trong nội dung chuyển khoản
+    // ─── Trường hợp 1: Thanh toán khách vãng lai (BAI...) ───
+    const guestMatch = (content || '').toUpperCase().match(/BAI[A-Z0-9]{12}/);
+    if (guestMatch) {
+      const sessionCode = guestMatch[0];
+      const paidAmount  = parseFloat(transferAmount) || 0;
+      const guestClient = await pool.connect();
+      try {
+        await guestClient.query('BEGIN');
+        const gRes = await guestClient.query(
+          `SELECT session_id, fee, payment_status, lot_id, license_plate
+           FROM guest_sessions WHERE session_code = $1 FOR UPDATE`,
+          [sessionCode]
+        );
+        if (!gRes.rows[0]) {
+          await guestClient.query('ROLLBACK');
+          console.log(`[Webhook] BAI: không tìm thấy session_code ${sessionCode}`);
+          return res.json({ success: true });
+        }
+        const g = gRes.rows[0];
+        if (g.payment_status === 'paid') {
+          await guestClient.query('ROLLBACK');
+          return res.json({ success: true }); // idempotent
+        }
+        if (paidAmount < parseFloat(g.fee)) {
+          await guestClient.query('ROLLBACK');
+          console.log(`[Webhook] BAI ${sessionCode}: thiếu tiền (paid=${paidAmount} < fee=${g.fee})`);
+          return res.json({ success: true });
+        }
+        await guestClient.query(
+          `UPDATE guest_sessions
+           SET payment_status = 'paid', paid_at = NOW(), payment_gateway = 'cash_qr',
+               gateway_transaction_id = $1,
+               status = 'completed', exit_time = NOW(),
+               updated_at = NOW()
+           WHERE session_id = $2`,
+          [String(req.body.id || req.body.referenceCode || sessionCode), g.session_id]
+        );
+        await guestClient.query('COMMIT');
+        console.log(`[Webhook] BAI ${sessionCode}: đã thanh toán ${paidAmount}đ`);
+
+        // Emit Socket.IO event để OperatorWeb và các client biết
+        const io = req.app.get('io');
+        if (io) {
+          io.emit('guest:paid', {
+            session_id:   g.session_id,
+            session_code: sessionCode,
+            license_plate: g.license_plate,
+            fee:          paidAmount,
+            ts:           Date.now(),
+          });
+        }
+      } catch (e) {
+        try { await guestClient.query('ROLLBACK'); } catch (_) {}
+        console.error(`[Webhook] BAI ${sessionCode} LỖI cập nhật DB:`, e.message);
+      } finally {
+        guestClient.release();
+      }
+      return res.json({ success: true });
+    }
+
+    // Tìm mã tham chiếu trong nội dung chuyển khoản (nạp ví)
     const match = (content || '').match(/NAP[A-Z0-9]{12}/);
     if (!match) return res.json({ success: true });
     const refCode = match[0];

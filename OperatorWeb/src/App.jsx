@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Wifi, WifiOff, Activity, Loader2, ShieldCheck, ShieldX,
   XCircle, Unlock, Lock, Maximize2, Minimize2, Camera, ParkingSquare, Settings,
+  QrCode, Clock,
 } from 'lucide-react'
 
 const BRIDGE_WS  = import.meta.env.VITE_BRIDGE_WS  || 'ws://localhost:4002'
@@ -350,6 +351,26 @@ function GateColumn({ gate, assignment, dispatchRef, onSend, onCamOnline }) {
           pushEvent({ label: `⚠️ ${data.message || 'Lỗi'}`, color: 'orange', ts })
           resetRef.current = setTimeout(reset, 6000)
           break
+        case 'NO_OBJECT':
+          setGateState('error'); setStateMsg('Không có đối tượng nhận diện')
+          pushEvent({ label: '🚫 Không có đối tượng nhận diện', color: 'orange', ts })
+          resetRef.current = setTimeout(reset, 5000)
+          break
+        case 'PAYMENT_REQUIRED':
+          setGateState('processing'); setStateMsg(`Chờ TT ${fmtVND(data.fee)}`)
+          pushEvent({ label: `💳 Khách VL · ${data.plate || '—'} · QR ${fmtVND(data.fee)}`, color: 'violet', ts })
+          break
+        case 'PAYMENT_SUCCESS':
+          setGateState('allowed'); setStateMsg(`Đã TT ${fmtVND(data.fee)}`)
+          setLastInfo({ plate: data.plate, name: 'Khách vãng lai', fee: data.fee, kind: 'guest' })
+          pushEvent({ label: `✅ TT thành công · ${data.plate || '—'} · ${fmtVND(data.fee)}`, color: 'emerald', ts })
+          resetRef.current = setTimeout(reset, 8000)
+          break
+        case 'PAYMENT_TIMEOUT':
+          setGateState('error'); setStateMsg('Hết hạn thanh toán')
+          pushEvent({ label: `⏱️ Hết hạn TT · ${data.session_code || ''}`, color: 'rose', ts })
+          resetRef.current = setTimeout(reset, 6000)
+          break
         default: break
       }
     }
@@ -452,6 +473,7 @@ export default function App() {
   const [aiOnline,     setAiOnline]     = useState(false)
   const [assignment,   setAssignment]   = useState(DEFAULT_ASSIGNMENT)
   const [showCamModal, setShowCamModal] = useState(false)
+  const [payment,      setPayment]      = useState(null) // {qr_url, fee, plate, session_code, bank_account, bank_code, account_name, started_ts}
   const wsRef       = useRef(null)
   const dispatchRef = useRef({})
 
@@ -474,6 +496,14 @@ export default function App() {
         if (destroyed) return
         try {
           const msg = JSON.parse(e.data)
+
+          // ─── Sự kiện thanh toán khách vãng lai → modal cấp App ───
+          if (msg.type === 'PAYMENT_REQUIRED') {
+            setPayment({ ...msg.data, started_ts: Date.now() })
+          } else if (msg.type === 'PAYMENT_SUCCESS' || msg.type === 'PAYMENT_TIMEOUT') {
+            setPayment(null)
+          }
+
           const gate = msg?.data?.gate
           if (gate && dispatchRef.current[gate]) {
             dispatchRef.current[gate](msg)
@@ -575,6 +605,91 @@ export default function App() {
           onSave={newAssign => setAssignment(newAssign)}
         />
       )}
+
+      {/* Modal QR thanh toán khách vãng lai */}
+      {payment && (
+        <PaymentModal payment={payment} onCancel={() => setPayment(null)} />
+      )}
+    </div>
+  )
+}
+
+// ---------- PaymentModal ----------
+function PaymentModal({ payment, onCancel }) {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setElapsed(Math.floor((Date.now() - payment.started_ts) / 1000)), 1000)
+    return () => clearInterval(t)
+  }, [payment.started_ts])
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, '0')
+  const ss = String(elapsed % 60).padStart(2, '0')
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden">
+        <div className="bg-gradient-to-r from-violet-600 to-purple-600 px-6 py-4 flex items-center gap-3">
+          <QrCode className="text-white" size={28} />
+          <div className="flex-1">
+            <div className="text-white text-lg font-bold leading-tight">Khách Vãng Lai · Thanh Toán</div>
+            <div className="text-white/80 text-xs">Quét QR bằng app ngân hàng bất kỳ</div>
+          </div>
+          <div className="flex items-center gap-1.5 text-white bg-white/15 px-2.5 py-1 rounded-full text-xs font-mono">
+            <Clock size={13} /> {mm}:{ss}
+          </div>
+        </div>
+
+        <div className="p-6 flex flex-col items-center gap-3">
+          <div className="bg-white p-2 rounded-xl ring-4 ring-violet-100 shadow-soft">
+            <img
+              src={payment.qr_url}
+              alt="QR thanh toán"
+              className="w-64 h-64 object-contain"
+            />
+          </div>
+
+          <div className="text-center mt-2">
+            <div className="text-xs text-slate-500 uppercase tracking-wide font-semibold">Biển số</div>
+            <div className="text-xl font-mono font-bold text-slate-900 tracking-widest">{payment.plate || '—'}</div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 w-full mt-1">
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
+              <div className="text-[10px] text-slate-500 uppercase tracking-wide font-semibold">Số tiền</div>
+              <div className="text-emerald-600 font-bold text-lg">{fmtVND(payment.fee)}</div>
+            </div>
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
+              <div className="text-[10px] text-slate-500 uppercase tracking-wide font-semibold">Ngân hàng</div>
+              <div className="text-slate-800 font-bold text-lg">{payment.bank_code || '—'}</div>
+            </div>
+          </div>
+
+          <div className="w-full bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs">
+            <div className="flex justify-between mb-1">
+              <span className="text-slate-600">STK:</span>
+              <span className="font-mono font-bold text-slate-900">{payment.bank_account}</span>
+            </div>
+            <div className="flex justify-between mb-1">
+              <span className="text-slate-600">Chủ TK:</span>
+              <span className="font-semibold text-slate-900">{payment.account_name}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-600">Nội dung CK:</span>
+              <span className="font-mono font-bold text-violet-700">{payment.session_code}</span>
+            </div>
+          </div>
+
+          <div className="text-center text-[11px] text-slate-500 mt-1">
+            Hệ thống tự động phát hiện thanh toán qua SePay và mở barrier
+          </div>
+
+          <button
+            onClick={onCancel}
+            className="mt-2 w-full py-2.5 rounded-xl text-sm font-semibold
+              bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors">
+            Ẩn cửa sổ (vẫn chờ thanh toán nền)
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

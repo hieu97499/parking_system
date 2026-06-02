@@ -33,4 +33,9 @@ async function fetchSlots() {
   return data;  // { available_slots, capacity, occupied }
 }
 
-module.exports = { reportEntry, reportExit, logManualEvent, fetchSlots };
+async function fetchGuestPaymentStatus(sessionCode) {
+  const { data } = await http.get(`/api/hardware/guest-payment-status/${sessionCode}`);
+  return data;
+}
+
+module.exports = { reportEntry, reportExit, logManualEvent, fetchSlots, fetchGuestPaymentStatus };

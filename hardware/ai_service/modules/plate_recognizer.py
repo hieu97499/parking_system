@@ -516,8 +516,16 @@ class PlateRecognizer:
             _yolo_found = roi is not None
             if roi is None:
                 roi = self._find_plate_roi(image)
-            source = roi if roi is not None else image
-            source_label = "YOLO" if _yolo_found else ("ROI" if roi is not None else "FULL")
+
+            # Nếu cả YOLO và contour đều không thấy vùng biển → coi như không có
+            # đối tượng trong khung hình. KHÔNG OCR toàn frame để tránh đọc bừa
+            # các chữ trên tường/nền.
+            if roi is None:
+                logger.info("[PLATE] Khong phat hien vung bien so trong khung hinh")
+                return {"plate": "", "confidence": 0.0, "roi_image": None, "ocr_raw": ""}
+
+            source = roi
+            source_label = "YOLO" if _yolo_found else "ROI"
 
             if self._paddle_proc is not None and self._paddle_proc.poll() is None:
 

@@ -441,6 +441,10 @@ async def process_entry():
             plate_res = {"plate": "", "confidence": 0.0, "plate_image_path": plate_path}
             logger.warning(f"ENTRY plate recognition timeout – cam {config.ENTRY_PLATE_CAM}")
 
+        no_object = (not plate_res["plate"]) and (face_res["user_id"] is None)
+        if no_object:
+            logger.warning("ENTRY: Khong co doi tuong nhan dien (khung hinh trong)")
+
         return {
             "plate":              plate_res["plate"],
             "plate_confidence":   plate_res["confidence"],
@@ -448,6 +452,8 @@ async def process_entry():
             "face_user_id":       face_res["user_id"],
             "face_confidence":    face_res["confidence"],
             "face_image_path":    face_res["face_image_path"],
+            "no_object":          no_object,
+            "message":            "Không có đối tượng nhận diện" if no_object else "",
             "processing_time_ms": round((time.time() - t0) * 1000),
         }
 
@@ -487,6 +493,10 @@ async def process_exit():
             plate_res = {"plate": "", "confidence": 0.0, "plate_image_path": plate_path}
             logger.warning(f"EXIT plate recognition timeout – cam {config.EXIT_PLATE_CAM}")
 
+        no_object = (not plate_res["plate"]) and (face_res["user_id"] is None)
+        if no_object:
+            logger.warning("EXIT: Khong co doi tuong nhan dien (khung hinh trong)")
+
         return {
             "plate":              plate_res["plate"],
             "plate_confidence":   plate_res["confidence"],
@@ -494,6 +504,8 @@ async def process_exit():
             "face_user_id":       face_res["user_id"],
             "face_confidence":    face_res["confidence"],
             "face_image_path":    face_res["face_image_path"],
+            "no_object":          no_object,
+            "message":            "Không có đối tượng nhận diện" if no_object else "",
             "processing_time_ms": round((time.time() - t0) * 1000),
         }
 

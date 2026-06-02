@@ -41,6 +41,16 @@ async function handleEntry() {
     });
     ws.broadcast('AI_RESULT', { gate: 'entry', ...aiResult });
 
+    if (aiResult.no_object) {
+      console.warn('[ENTRY] Không có đối tượng nhận diện – giữ barrier đóng');
+      serial.sendStatus('FAIL', 'KHONG CO XE', 0);
+      ws.broadcast('NO_OBJECT', {
+        gate: 'entry',
+        message: 'Không có đối tượng nhận diện',
+      });
+      return;
+    }
+
     const backendRes = await backend.reportEntry({
       plate:             aiResult.plate,
       plate_confidence:  aiResult.plate_confidence,
@@ -102,23 +112,27 @@ async function handleExit() {
     });
     ws.broadcast('AI_RESULT', { gate: 'exit', ...aiResult });
 
-    // Kiểm tra trước khi tạo phiên ra (tránh trừ tiền oan khi mặt không khớp)
+    if (aiResult.no_object) {
+      console.warn('[EXIT] Không có đối tượng nhận diện – giữ barrier đóng');
+      serial.sendStatus('FAIL', 'KHONG CO XE', 0);
+      ws.broadcast('NO_OBJECT', {
+        gate: 'exit',
+        message: 'Không có đối tượng nhận diện',
+      });
+      return;
+    }
+
+    // Yêu cầu tối thiểu: phải đọc được biển số để Backend tra cứu phiên.
+    // (Khách vãng lai cũng cần biển số – mặt khớp/không Backend tự xử lý.)
     const hasPlate = aiResult.plate && aiResult.plate.length >= 2
       && parseFloat(aiResult.plate_confidence || 0) >= parseFloat(process.env.PLATE_CONF_MIN || '0.45');
-    const hasFace  = aiResult.face_user_id != null
-      && parseFloat(aiResult.face_confidence  || 0) >= parseFloat(process.env.FACE_CONF_MIN  || '0.55');
 
-    if (!hasPlate || !hasFace) {
-      const reason = !hasPlate && !hasFace
-        ? 'Không nhận diện được biển số và khuôn mặt'
-        : !hasPlate
-          ? 'Không nhận diện được biển số'
-          : 'Khuôn mặt không khớp chủ xe';
-      console.warn(`[EXIT] ${reason} – giữ barrier đóng, KHÔNG trừ tiền`);
-      serial.sendStatus('FAIL', 'MAT KHONG KHOP', 0);
+    if (!hasPlate) {
+      console.warn(`[EXIT] Không đọc được biển số – giữ barrier đóng`);
+      serial.sendStatus('FAIL', 'KHONG DOC BIEN', 0);
       ws.broadcast('ERROR', {
         gate: 'exit',
-        message: `${reason} – cần can thiệp thủ công`,
+        message: 'Không nhận diện được biển số – cần can thiệp thủ công',
       });
       return;
     }
@@ -132,6 +146,66 @@ async function handleExit() {
       face_image_path:  aiResult.face_image_path,
       device_id:        cfg.EXIT_DEVICE_ID,
     });
+
+    // ─── KHÁCH VÃNG LAI CẦN THANH TOÁN ───
+    if (backendRes.payment_required) {
+      console.log(`[EXIT] Khách vãng lai cần thanh toán: ${backendRes.fee}đ – mã ${backendRes.session_code}`);
+      ws.broadcast('PAYMENT_REQUIRED', {
+        gate: 'exit',
+        session_code: backendRes.session_code,
+        plate:        backendRes.plate,
+        fee:          backendRes.fee,
+        qr_url:       backendRes.qr_url,
+        bank_account: backendRes.bank_account,
+        bank_code:    backendRes.bank_code,
+        account_name: backendRes.account_name,
+      });
+      serial.sendStatus('WAIT', `CHO TT ${backendRes.fee}`, backendRes.fee);
+
+      // Poll trạng thái thanh toán mỗi 2s, timeout sau 5 phút
+      const sessionCode = backendRes.session_code;
+      const startTs = Date.now();
+      const TIMEOUT_MS = 5 * 60 * 1000;
+      let paid = false;
+      while (Date.now() - startTs < TIMEOUT_MS) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const s = await backend.fetchGuestPaymentStatus(sessionCode);
+          if (s.payment_status === 'paid' || s.status === 'completed') {
+            paid = true;
+            break;
+          }
+        } catch (e) { /* network blip – tiếp tục poll */ }
+      }
+
+      if (!paid) {
+        console.warn(`[EXIT] Hết hạn chờ thanh toán cho ${sessionCode}`);
+        ws.broadcast('PAYMENT_TIMEOUT', { gate: 'exit', session_code: sessionCode });
+        serial.sendStatus('FAIL', 'HET HAN TT', 0);
+        return;
+      }
+
+      console.log(`[EXIT] ✅ Thanh toán thành công ${sessionCode}`);
+      ws.broadcast('PAYMENT_SUCCESS', {
+        gate: 'exit',
+        session_code: sessionCode,
+        plate: backendRes.plate,
+        fee:   backendRes.fee,
+      });
+      serial.sendStatus('OK', backendRes.plate || '', backendRes.fee || 0);
+      serial.openBarrier('exit');
+      _barrierOpen.exit = true;
+      ws.broadcast('BARRIER_OPENED', { gate: 'exit' });
+      // Cập nhật slot count
+      try {
+        const slots = await backend.fetchSlots();
+        if (slots && typeof slots.available_slots === 'number') {
+          _lastKnownSlots = slots.available_slots;
+          serial.sendSlots(_lastKnownSlots);
+        }
+      } catch (_) {}
+      return;
+    }
 
     console.log('[EXIT] Backend:', backendRes.message,
       '| fee:', backendRes.fee,
