@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Car, Users, FileText,
-  BarChart2, AlertTriangle, Settings, LogOut, ParkingSquare,
+  LayoutDashboard, Car, Users, Cpu, FileText,
+  BarChart2, AlertTriangle, Settings, LogOut, ParkingSquare, Link2, Cctv,
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import clsx from 'clsx'
@@ -13,10 +13,13 @@ const mainNavItems = [
   { to: '/events',  icon: FileText,        label: 'Nhật ký sự kiện' },
   { to: '/reports', icon: BarChart2,       label: 'Báo cáo' },
   { to: '/alerts',  icon: AlertTriangle,   label: 'Cảnh báo' },
+  { to: '/cameras', icon: Cctv,             label: 'Camera trực tiếp' },
   { to: '/config',  icon: Settings,        label: 'Cấu hình' },
 ]
 
-const connectNavItems = []
+const connectNavItems = [
+  { to: '/devices', icon: Cpu, label: 'Vận hành' },
+]
 
 export default function Sidebar() {
   const navigate = useNavigate()
@@ -65,6 +68,31 @@ export default function Sidebar() {
               )}
             </NavLink>
           ))}
+        </div>
+
+        {}
+        <div className="mt-5">
+          <div className="flex items-center gap-2 px-3 mb-1.5">
+          </div>
+          <div className="space-y-0.5">
+            {connectNavItems.map(({ to, icon: Icon, label }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  clsx(
+                    'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-blue-600 text-white'
+                      : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                  )
+                }
+              >
+                <Icon size={18} />
+                <span>{label}</span>
+              </NavLink>
+            ))}
+          </div>
         </div>
       </nav>
 

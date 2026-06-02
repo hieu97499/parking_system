@@ -90,7 +90,7 @@ function CamAssignPanel({ assignment, onSaved }) {
 
   useEffect(() => {
     if (!open) return
-    fetch(`${AI_URL}/cameras`, { signal: AbortSignal.timeout(3000) })
+    fetch(`${AI_URL}/cameras`, { signal: AbortSignal.timeout(45000) })
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d?.cameras) setCameras(d.cameras) })
       .catch(() => {})
@@ -127,12 +127,7 @@ function CamAssignPanel({ assignment, onSaved }) {
     { key: "exit_face",   label: "Ra  – Khuôn mặt", accent: "rose"   },
   ]
   const accentText = { blue: "text-blue-600", violet: "text-violet-600", amber: "text-amber-600", rose: "text-rose-600" }
-  const camLabel = idx => {
-    const c = cameras.find(x => x.index === idx)
-    return c ? `cam ${idx}  (${c.width}×${c.height})` : `cam ${idx}`
-  }
-
-  const allIndices = [...new Set([...cameras.map(c => c.index), 0, 1, 2, 3, 4, 5])].sort((a, b) => a - b)
+  const rtspCams = cameras.filter(c => c.source_type === 'rtsp')
 
   return (
     <div className="shrink-0">
@@ -157,12 +152,15 @@ function CamAssignPanel({ assignment, onSaved }) {
               <div key={key} className="flex items-center justify-between gap-2">
                 <span className={`text-[11px] font-medium ${accentText[accent]} w-32 shrink-0`}>{label}</span>
                 <select
-                  value={draft[key]}
-                  onChange={e => setDraft(p => ({ ...p, [key]: Number(e.target.value) }))}
+                  value={draft[key] ?? ''}
+                  onChange={e => setDraft(p => ({ ...p, [key]: e.target.value }))}
                   className="flex-1 text-xs border border-slate-200 rounded-lg px-2 py-1 bg-slate-50
                     focus:outline-none focus:ring-2 focus:ring-blue-400">
-                  {allIndices.map(i => (
-                    <option key={i} value={i}>{camLabel(i)}</option>
+                  <option value="">— Chưa gán —</option>
+                  {rtspCams.map(c => (
+                    <option key={c.source} value={c.source}>
+                      📡 {c.name}{c.width ? ` · ${c.width}×${c.height}` : ''}
+                    </option>
                   ))}
                 </select>
               </div>

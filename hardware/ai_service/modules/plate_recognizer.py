@@ -31,6 +31,7 @@ class PlateRecognizer:
         self._ready  = False
         self._lock   = Lock()
         self._paddle_proc = None
+        self._yolo_plate  = None
         self._load_models()
 
     @classmethod
@@ -40,6 +41,21 @@ class PlateRecognizer:
         return cls._instance
 
     def _load_models(self):
+
+        # ── YOLO plate detector ──────────────────────────────────────────
+        self._yolo_plate = None
+        try:
+            from ultralytics import YOLO as _YOLO
+            if os.path.exists(config.PLATE_MODEL_PATH):
+                self._yolo_plate = _YOLO(config.PLATE_MODEL_PATH)
+                # warmup
+                _dummy = np.ones((64, 200, 3), np.uint8) * 255
+                self._yolo_plate(_dummy, verbose=False)
+                logger.info(f"Plate detector (YOLO) da san sang: {config.PLATE_MODEL_PATH}")
+            else:
+                logger.warning(f"Khong tim thay YOLO plate model: {config.PLATE_MODEL_PATH}")
+        except Exception as e:
+            logger.warning(f"Khong the load YOLO plate model: {e}")
 
         self._ocr = None
         try:
@@ -200,6 +216,33 @@ class PlateRecognizer:
             return f"{m.group(1)}-0{m.group(2)}"
         return ""
 
+    def _find_plate_roi_yolo(self, image: np.ndarray):
+        """
+        Detect bien so bang YOLO. Tra ve roi crop hoac None.
+        Nhanh hon va chinh xac hon contour-based method.
+        """
+        if self._yolo_plate is None:
+            return None
+        try:
+            results = self._yolo_plate(image, verbose=False,
+                                       conf=config.PLATE_CONF_THRESHOLD)
+            if not results or len(results[0].boxes) == 0:
+                return None
+            boxes = results[0].boxes
+            best_idx = int(boxes.conf.argmax())
+            x1, y1, x2, y2 = boxes.xyxy[best_idx].cpu().numpy().astype(int)
+            h, w = image.shape[:2]
+            pad = 10
+            x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
+            x2, y2 = min(w, x2 + pad), min(h, y2 + pad)
+            roi = image[y1:y2, x1:x2]
+            det_conf = float(boxes.conf[best_idx])
+            logger.info(f"[YOLO] plate box=({x1},{y1},{x2},{y2}) conf={det_conf:.2f}")
+            return roi if roi.size > 0 else None
+        except Exception as e:
+            logger.warning(f"YOLO plate detect loi: {e}")
+            return None
+
     def _find_plate_roi(self, image: np.ndarray):
         """
         Tim vung bien so bang contour detection.
@@ -232,8 +275,8 @@ class PlateRecognizer:
                 ar   = rw / max(rh, 1)
 
                 if area < w * h * 0.003:   continue
-                if area > w * h * 0.35:    continue
-                if not (1.5 <= ar <= 6.0): continue
+                if area > w * h * 0.50:    continue  # tăng lên 50% để bắt biển cầm gần camera
+                if not (1.2 <= ar <= 6.0): continue  # hạ xuống 1.2 cho biển 2 dòng cầm gần
 
                 roi_gray = gray[ry:ry + rh, rx:rx + rw]
                 contrast = float(roi_gray.std())
@@ -275,14 +318,17 @@ class PlateRecognizer:
     def _preprocess_variants(self, img, is_roi=True):
 
         gray_orig  = self._to_gray(img)
-        denoised_s = cv2.bilateralFilter(gray_orig, 5, 50, 50)
+        # Bước 1: Khử nhiễu nén JPEG/RTSP bằng median blur trước khi xử lý
+        gray_deblock = cv2.medianBlur(gray_orig, 3)
+        denoised_s = cv2.bilateralFilter(gray_deblock, 5, 55, 55)
 
         if is_roi:
-
-            denoised = self._resize_gray(denoised_s, min_w=400, max_w=640)
+            # Tăng max_w 640→900 để OCR thấy những biển số nhỏ hơn rõ hơn
+            denoised = self._resize_gray(denoised_s, min_w=400, max_w=900)
         else:
-
-            denoised = self._resize_gray(denoised_s, min_w=320, max_w=480)
+            # For full-frame / close-up plates: resize smaller so CRAFT sees
+            # text at a manageable scale (not upscaled beyond detection range)
+            denoised = self._resize_gray(denoised_s, min_w=120, max_w=200)
 
         clahe   = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
         v1_base = clahe.apply(denoised)
@@ -300,7 +346,7 @@ class PlateRecognizer:
         v3     = cv2.bitwise_not(v3_inv)
 
         return [v1, v2, v3]
-    def _run_ocr(self, img):
+    def _run_ocr(self, img, mag_ratio=2.0):
         if self._ocr is None:
             return [], 0.0
         results = self._ocr.readtext(
@@ -309,8 +355,10 @@ class PlateRecognizer:
             paragraph=False,
             allowlist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
             width_ths=0.4,
-            contrast_ths=0.05,
-            mag_ratio=1.5,
+            contrast_ths=0.01,
+            text_threshold=0.4,
+            low_text=0.3,
+            mag_ratio=mag_ratio,
         )
         if not results:
             return [], 0.0
@@ -438,7 +486,7 @@ class PlateRecognizer:
 
         return merged
 
-    def recognize(self, image_bytes: bytes, time_budget_s: float = 8.0) -> dict:
+    def recognize(self, image_bytes: bytes, time_budget_s: float = 15.0) -> dict:
         """
         Nhan dien bien so tu JPEG bytes.
         Returns: {"plate": "15B4-06744", "confidence": 0.88, "roi_image": None, "ocr_raw": str}
@@ -464,9 +512,12 @@ class PlateRecognizer:
         try:
             candidates = []
 
-            roi = self._find_plate_roi(image)
+            roi = self._find_plate_roi_yolo(image)
+            _yolo_found = roi is not None
+            if roi is None:
+                roi = self._find_plate_roi(image)
             source = roi if roi is not None else image
-            source_label = "ROI" if roi is not None else "FULL"
+            source_label = "YOLO" if _yolo_found else ("ROI" if roi is not None else "FULL")
 
             if self._paddle_proc is not None and self._paddle_proc.poll() is None:
 
@@ -494,12 +545,15 @@ class PlateRecognizer:
 
             top_conf = max((c for _, c in candidates), default=0.0)
             if top_conf < 0.80 and _time.time() < _deadline:
+                # mag_ratio: for ROI (cropped ~400-640px, text ~50-100px), upscale helps;
+                # for FULL frame (plate fills frame → preprocessed to ~200px), use 1.0
+                ocr_mag = 2.0 if roi is not None else 1.0
                 variants = self._preprocess_variants(source, is_roi=(roi is not None))
                 for vi, variant in enumerate(variants):
                     if _time.time() >= _deadline:
                         logger.info(f"[EasyOCR] Time budget exhausted at V{vi+1}")
                         break
-                    results, conf = self._run_ocr(variant)
+                    results, conf = self._run_ocr(variant, mag_ratio=ocr_mag)
                     raw           = self._reconstruct_2line(results)
                     plate         = self._normalize_plate(raw)
                     logger.info(f"[{source_label}/EasyOCR/V{vi+1}] raw='{raw}' -> plate='{plate}' conf={conf:.2f}")

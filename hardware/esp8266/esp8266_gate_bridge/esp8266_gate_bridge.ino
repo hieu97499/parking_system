@@ -3,13 +3,14 @@
 #include <Arduino.h>
 #include <SoftwareSerial.h>
 #include <ESP8266WiFi.h>
+#include <time.h>
 
 // ═══════════════════════════════════════════════════════════════════
 //  CẤU HÌNH – chỉnh sửa trước khi nạp firmware
 // ═══════════════════════════════════════════════════════════════════
-const char* WIFI_SSID      = "Khaidepzai";
-const char* WIFI_PASSWORD  = "hieuhieuhoangkhai";
-const char* BRIDGE_HOST    = "192.168.1.181";
+const char* WIFI_SSID      = "tepdenday";
+const char* WIFI_PASSWORD  = "0987654321";  
+const char* BRIDGE_HOST     = "172.20.10.8";
 const int   BRIDGE_PORT    = 4003;
 
 // UART tới Arduino Entry: RX=D5(GPIO14), TX=D6(GPIO12)
@@ -28,9 +29,11 @@ String      exitBuf;
 
 uint32_t lastReconnect = 0;
 uint32_t lastPing      = 0;
+uint32_t lastTimeSync  = 0;
 
 const uint32_t RECONNECT_DELAY_MS = 5000;
 const uint32_t PING_INTERVAL_MS   = 30000;
+const uint32_t TIME_PUSH_MS       = 30000;   // đồng bộ giờ tới Arduino mỗi 30s
 
 // ─── Gửi về Bridge ────────────────────────────────────────────────
 void sendToBridge(const char* msg) {
@@ -60,6 +63,18 @@ void handleBridgeMessage(const String& msg) {
   else if (msg == "EXIT:CLOSE")  sendToExit("CLOSE");
   else if (msg == "ENTRY:PING")  { sendToEntry("PING"); sendToBridge("ENTRY:PONG"); }
   else if (msg == "EXIT:PING")   { sendToExit("PING");  sendToBridge("EXIT:PONG");  }
+  // Cập nhật số chỗ trống lên OLED Entry Gate: "ENTRY:SLOTS:45"
+  else if (msg.startsWith("ENTRY:SLOTS:")) {
+    sendToEntry(msg.substring(6).c_str());  // gửi "SLOTS:45" tới Arduino entry
+  }
+  // Hiện QR code trên TFT Exit Gate: "EXIT:QR:https://..."
+  else if (msg.startsWith("EXIT:QR:")) {
+    sendToExit(msg.substring(5).c_str());   // gửi "QR:https://..." tới Arduino exit
+  }
+  // Trạng thái nhận diện: "EXIT:INFO:OK:plate:fee" hoặc "EXIT:INFO:FAIL:reason"
+  else if (msg.startsWith("EXIT:INFO:")) {
+    sendToExit(msg.substring(5).c_str());   // gửi "INFO:OK:..." tới Arduino exit
+  }
 }
 
 // ─── Xử lý tin từ Arduino ─────────────────────────────────────────
@@ -70,6 +85,8 @@ void handleArduinoMessage(const String& msg, const char* gate) {
   else if (msg == "SENSOR:CLEAR")    { snprintf(buf, sizeof(buf), "%s:SENSOR:CLEAR",    gate); sendToBridge(buf); }
   else if (msg == "READY")           { snprintf(buf, sizeof(buf), "%s:READY",           gate); sendToBridge(buf); }
   else if (msg == "PONG")            { snprintf(buf, sizeof(buf), "%s:PONG",            gate); sendToBridge(buf); }
+  else if (msg == "OK:OPEN")         { snprintf(buf, sizeof(buf), "%s:OK:OPEN",         gate); sendToBridge(buf); }
+  else if (msg == "OK:CLOSE")        { snprintf(buf, sizeof(buf), "%s:OK:CLOSE",        gate); sendToBridge(buf); }
 }
 
 // ─── Đọc UART từ Arduino (non-blocking) ───────────────────────────
@@ -104,6 +121,21 @@ void connectWifi() {
   }
   Serial.println();
   Serial.print("[WiFi] IP: "); Serial.println(WiFi.localIP());
+
+  // NTP — múi giờ Việt Nam (GMT+7), không DST
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
+  Serial.print("[NTP] sync");
+  uint32_t t0 = millis();
+  while (time(nullptr) < 100000 && millis() - t0 < 8000) {
+    delay(300); Serial.print(".");
+  }
+  time_t now = time(nullptr);
+  if (now > 100000) {
+    struct tm* lt = localtime(&now);
+    Serial.printf(" OK %02d:%02d:%02d\n", lt->tm_hour, lt->tm_min, lt->tm_sec);
+  } else {
+    Serial.println(" timeout (sẽ retry)");
+  }
 }
 
 // ─── Kết nối TCP đến Bridge ────────────────────────────────────────
@@ -167,16 +199,37 @@ void loop() {
     }
   }
 
-  // 4) Đọc UART từ 2 Arduino (listen() để switch giữa 2 SoftwareSerial)
-  entrySerial.listen();
-  readArduinoSerial(entrySerial, entryBuf, "ENTRY");
-  exitSerial.listen();
-  readArduinoSerial(exitSerial,  exitBuf,  "EXIT");
+  // 4) Đọc UART từ 2 Arduino – luân phiên nhanh để không mất byte.
+  //    SoftwareSerial chỉ 1 instance listen tại 1 thời điểm → chuyển từng 500µs
+  //    để mỗi Arduino luôn được lắng nghe trong cửa sổ < 1 byte (9600baud ≈ 1.04ms/byte).
+  for (uint8_t i = 0; i < 8; i++) {
+    entrySerial.listen();
+    delayMicroseconds(500);
+    readArduinoSerial(entrySerial, entryBuf, "ENTRY");
+
+    exitSerial.listen();
+    delayMicroseconds(500);
+    readArduinoSerial(exitSerial, exitBuf, "EXIT");
+  }
 
   // 5) Ping định kỳ
   if (millis() - lastPing >= PING_INTERVAL_MS) {
     lastPing = millis();
     sendToEntry("PING");
     sendToExit("PING");
+  }
+
+  // 6) Đồng bộ giờ NTP → Arduino exit (cho đồng hồ TFT)
+  if (millis() - lastTimeSync >= TIME_PUSH_MS) {
+    lastTimeSync = millis();
+    time_t now = time(nullptr);
+    if (now > 100000) {  // đã sync NTP
+      struct tm* lt = localtime(&now);
+      char tbuf[20];
+      snprintf(tbuf, sizeof(tbuf), "TIME:%02d:%02d:%02d",
+               lt->tm_hour, lt->tm_min, lt->tm_sec);
+      sendToExit(tbuf);
+      sendToEntry(tbuf);  // entry có thể dùng sau này
+    }
   }
 }

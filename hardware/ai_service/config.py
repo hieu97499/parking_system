@@ -13,10 +13,18 @@ if _env_path.exists():
 AI_HOST = os.getenv("AI_HOST", "0.0.0.0")
 AI_PORT = int(os.getenv("AI_PORT", "5001"))
 
-ENTRY_PLATE_CAM  = int(os.getenv("ENTRY_PLATE_CAM", "0"))
-ENTRY_FACE_CAM   = int(os.getenv("ENTRY_FACE_CAM",  "1"))
-EXIT_PLATE_CAM   = int(os.getenv("EXIT_PLATE_CAM",  "2"))
-EXIT_FACE_CAM    = int(os.getenv("EXIT_FACE_CAM",   "3"))
+def _cam_source(env_key, default):
+    """Trả về int (USB index) hoặc str (RTSP URL) tuỳ giá trị env."""
+    val = os.getenv(env_key, str(default))
+    try:
+        return int(val)
+    except ValueError:
+        return val  # RTSP/HTTP URL
+
+ENTRY_PLATE_CAM  = _cam_source("ENTRY_PLATE_CAM", 0)
+ENTRY_FACE_CAM   = _cam_source("ENTRY_FACE_CAM",  1)
+EXIT_PLATE_CAM   = _cam_source("EXIT_PLATE_CAM",  2)
+EXIT_FACE_CAM    = _cam_source("EXIT_FACE_CAM",   3)
 
 CAMERA_WIDTH  = int(os.getenv("CAMERA_WIDTH",  "1280"))
 CAMERA_HEIGHT = int(os.getenv("CAMERA_HEIGHT", "720"))
@@ -57,3 +65,4 @@ PLATE_MAX_RETRIES    = int(os.getenv("PLATE_MAX_RETRIES", "2"))
 
 BACKEND_URL     = os.getenv("BACKEND_URL",     "http://localhost:4000")
 HARDWARE_API_KEY= os.getenv("HARDWARE_API_KEY", "parking_hw_secret_change_this")
+FACE_SYNC_INTERVAL = int(os.getenv("FACE_SYNC_INTERVAL", "60"))  # giây; 0 = tắt auto-sync

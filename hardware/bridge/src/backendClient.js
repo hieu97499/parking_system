@@ -22,4 +22,15 @@ async function reportExit(payload) {
   return data;
 }
 
-module.exports = { reportEntry, reportExit };
+async function logManualEvent(payload) {
+  try {
+    await http.post('/api/hardware/manual-event', payload);
+  } catch (_) {}  // best-effort, không crash bridge
+}
+
+async function fetchSlots() {
+  const { data } = await http.get('/api/hardware/slots');
+  return data;  // { available_slots, capacity, occupied }
+}
+
+module.exports = { reportEntry, reportExit, logManualEvent, fetchSlots };

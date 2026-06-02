@@ -97,29 +97,148 @@ class CameraManager:
             self._cam_locks[cam_index] = Lock()
         return self._cam_locks[cam_index]
 
-    def _open_cap(self, cam_index: int, stream_mode: bool = False) -> cv2.VideoCapture:
+    def _open_rtsp(self, url: str, stream_mode: bool = False) -> cv2.VideoCapture:
+        """Mở RTSP/HTTP camera qua FFmpeg backend."""
+        target_w   = getattr(config, "STREAM_WIDTH",  640)  if stream_mode else config.CAMERA_WIDTH
+        target_h   = getattr(config, "STREAM_HEIGHT", 480)  if stream_mode else config.CAMERA_HEIGHT
+        target_fps = getattr(config, "STREAM_FPS",    10)   if stream_mode else getattr(config, "CAMERA_FPS", 15)
+
+        def _do():
+            try:
+                cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+                if cap.isOpened():
+                    # stream_mode: buffer lớn hơn để drain lấy frame mới nhất
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 4 if stream_mode else 1)
+                    cap.set(cv2.CAP_PROP_FPS, target_fps)
+                    result[0] = cap
+                else:
+                    logger.error(f"[RTSP] Không mở được: {url}")
+            except Exception as e:
+                logger.error(f"[RTSP] Lỗi mở {url}: {e}")
+
+        result: list = [None]
+        t = threading.Thread(target=_do, daemon=True)
+        t.start()
+        t.join(15.0)  # RTSP connect timeout 15s
+        if t.is_alive():
+            logger.warning(f"[RTSP] Timeout kết nối: {url}")
+            return None
+        if result[0] is None:
+            return None
+        logger.info(f"[RTSP] Đã kết nối: {url} ({int(result[0].get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(result[0].get(cv2.CAP_PROP_FRAME_HEIGHT))})")
+        return result[0]
+
+    def _stream_frame_rtsp(self, url: str) -> Optional[bytes]:
+        """Đọc 1 frame từ RTSP camera, giữ kết nối trong pool theo URL key.
+        Tự kết nối lại khi bị ngắt. Trả về JPEG bytes hoặc None (→ placeholder).
+        """
+        cam_lock = self._get_cam_lock(url)
+
+        with cam_lock:
+            cap = self._cameras.get(url)
+            if cap and cap.isOpened():
+                try:
+                    # Drain RTSP buffer để lấy frame mới nhất (tránh WiFi buffer lag)
+                    _latest = None
+                    for _ in range(5):
+                        _r, _f = cap.read()
+                        if _r and _f is not None:
+                            _latest = _f
+                        else:
+                            break
+                    if _latest is not None:
+                        self._cam_last_used[url] = time.time()
+                        sw = getattr(config, "STREAM_WIDTH",  640)
+                        sh = getattr(config, "STREAM_HEIGHT", 480)
+                        h, w = _latest.shape[:2]
+                        if w > sw or h > sh:
+                            _latest = cv2.resize(_latest, (sw, sh))
+                        _, buf = cv2.imencode(".jpg", _latest, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                        return buf.tobytes()
+                except Exception as e:
+                    logger.warning(f"[RTSP] stream_frame_rtsp read: {e}")
+                # Handle mở thất bại hoặc đọc hỏng → đóng để reconnect
+                try:
+                    self._cameras[url].release()
+                except Exception:
+                    pass
+                del self._cameras[url]
+
+        # Reconnect – dùng _init_lock để tránh mở đồng thời nhiều lần
+        retry_after = self._open_retry_after.get(url, 0)
+        if time.time() < retry_after:
+            return None
+
+        with self._init_lock:
+            with cam_lock:
+                # Kiểm tra lại sau khi lấy init_lock (có thể thread khác đã reconnect)
+                cap = self._cameras.get(url)
+                if cap and cap.isOpened():
+                    pass  # đã reconnect bởi thread khác
+                else:
+                    try:
+                        cap = self._open_rtsp(url, stream_mode=True)
+                        if cap is None:
+                            self._open_retry_after[url] = time.time() + 30.0
+                            return None
+                        self._cameras[url]  = cap
+                        self._cam_open_time[url] = time.time()
+                        self._open_retry_after.pop(url, None)
+                    except Exception as e:
+                        logger.warning(f"[RTSP] reconnect {url}: {e} – retry in 30s")
+                        self._open_retry_after[url] = time.time() + 30.0
+                        return None
+
+        # Đọc frame sau khi reconnect thành công
+        with cam_lock:
+            cap = self._cameras.get(url)
+            if cap and cap.isOpened():
+                try:
+                    _latest = None
+                    for _ in range(5):
+                        _r, _f = cap.read()
+                        if _r and _f is not None:
+                            _latest = _f
+                        else:
+                            break
+                    if _latest is not None:
+                        sw = getattr(config, "STREAM_WIDTH",  640)
+                        sh = getattr(config, "STREAM_HEIGHT", 480)
+                        h, w = _latest.shape[:2]
+                        if w > sw or h > sh:
+                            _latest = cv2.resize(_latest, (sw, sh))
+                        _, buf = cv2.imencode(".jpg", _latest, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                        return buf.tobytes()
+                except Exception:
+                    pass
+        return None
+
+    def _open_cap(self, cam_index, stream_mode: bool = False) -> cv2.VideoCapture:
         """Mở camera và đặt độ phân giải.
+        Hỗ trợ cả USB index (int) và RTSP/HTTP URL (str).
         stream_mode=True : dùng MSMF thuần (không có DSHOW 3-filter-graph limit),
                            độ phân giải STREAM_WIDTH×STREAM_HEIGHT.
         stream_mode=False: dùng MSMF→DSHOW fallback, độ phân giải CAMERA_WIDTH×HEIGHT.
         """
+
+        # ── RTSP / HTTP URL ──────────────────────────────────────────────────────
+        if isinstance(cam_index, str):
+            return self._open_rtsp(cam_index, stream_mode)
+
+        # ── USB webcam (integer index) ───────────────────────────────────────────
         delays = [0, 1.0, 2.0]
 
         if stream_mode:
             target_w   = getattr(config, "STREAM_WIDTH",  640)
             target_h   = getattr(config, "STREAM_HEIGHT", 480)
             target_fps = getattr(config, "STREAM_FPS",    10)
-            # MSMF cần lâu (~10-20s) khi đã có cam DSHOW khác mở; DSHOW "by index"
-            # thường fail khi đã có cap DSHOW khác → ưu tiên MSMF với timeout dài.
             backends = [(cv2.CAP_MSMF, "MSMF", 25.0), (cv2.CAP_DSHOW, "DSHOW", 6.0)]
         else:
             target_w   = config.CAMERA_WIDTH
             target_h   = config.CAMERA_HEIGHT
             target_fps = getattr(config, "CAMERA_FPS", 15)
-            backends   = [(cv2.CAP_MSMF, "MSMF", 8.0), (cv2.CAP_DSHOW, "DSHOW", 8.0)]
+            backends   = [(cv2.CAP_DSHOW, "DSHOW", 8.0), (cv2.CAP_MSMF, "MSMF", 12.0)]
 
-        # Với stream_mode: đặt FOURCC+resolution trong constructor (OpenCV 4.5+)
-        # để camera cấp phát USB buffer ở 640×480 NGAY TỪ ĐẦU, tránh 1920×1080 làm bão hoà USB
         if stream_mode:
             ctor_params = [
                 cv2.CAP_PROP_FOURCC,        cv2.VideoWriter_fourcc(*'MJPG'),
@@ -144,9 +263,7 @@ class CameraManager:
 
                 native_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 native_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                # Vẫn set lại sau open để xử lý driver không nhận params trong constructor
                 if stream_mode:
-                    # Ép MJPG TRƯỚC khi set resolution để driver cấp phát USB buffer nén
                     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  target_w)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_h)
@@ -154,6 +271,14 @@ class CameraManager:
                 cap.set(cv2.CAP_PROP_FPS, target_fps)
                 final_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 final_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                if final_w == 0 or final_h == 0:
+                    # Driver bad state (thường sau crash) – resolution set failed.
+                    # Release và thử backend/delay tiếp theo.
+                    logger.warning(f"Camera {cam_index} [{name}] bad state: final={final_w}x{final_h}, skip")
+                    try: cap.release()
+                    except Exception: pass
+                    time.sleep(1.0)
+                    continue
                 fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
                 fourcc_str = "".join([chr((fourcc_int >> (8*i)) & 0xFF) for i in range(4)])
                 mode_tag = "stream" if stream_mode else "capture"
@@ -294,39 +419,61 @@ class CameraManager:
             return None
 
     def _capture_keep(self, cam_index: int, retries: int) -> Optional[bytes]:
-        """Giữ camera mở liên tục – mỗi camera có lock riêng, 2 cam chụp song song."""
+        """Giữ camera mở liên tục – mỗi camera có lock riêng, 2 cam chụp song song.
+
+        Khi camera chưa có trong pool (bị evict bởi DSHOW 3-slot limit), dùng
+        stream_frame() để mở lại (stream_frame có eviction logic xử lý DSHOW limit),
+        sau đó đọc frame full-res từ pool. Tránh gọi _open_cap trực tiếp ở đây vì
+        không có eviction → sẽ fail với DSHOW khi 3 slot đã dùng hết.
+        """
         lock = self._get_cam_lock(cam_index)
         for attempt in range(retries):
             try:
+                # Fast path: camera đã có trong pool → đọc trực tiếp
+                with lock:
+                    cap = self._cameras.get(cam_index)
+                    if cap and cap.isOpened():
+                        # RTSP: drain buffer để chụp frame mới nhất, không phải frame cũ
+                        if isinstance(cam_index, str):
+                            frame = None
+                            for _ in range(6):
+                                _r, _f = cap.read()
+                                if _r and _f is not None:
+                                    frame = _f
+                                else:
+                                    break
+                            ret = frame is not None
+                        else:
+                            ret, frame = cap.read()
+                        if not ret or frame is None:
+                            raise RuntimeError("Doc frame that bai")
+                        _, buf = cv2.imencode(".jpg", frame,
+                                             [cv2.IMWRITE_JPEG_QUALITY, 90])
+                        return buf.tobytes()
+
+                # Slow path: camera không trong pool → dùng stream_frame để mở
+                # (stream_frame xử lý DSHOW eviction, aliasing detection)
+                # Nếu _open_retry_after chưa qua (cam conflict đang bị HOLD), đợi cho đến khi
+                # hết hold time rồi mới gọi stream_frame (để eviction được kích hoạt).
+                retry_at = self._open_retry_after.get(cam_index, 0)
+                wait_secs = retry_at - time.time()
+                if wait_secs > 0.5:
+                    logger.debug(
+                        f"Camera {cam_index} capture waiting {wait_secs:.1f}s for eviction window")
+                    time.sleep(min(wait_secs + 0.5, 10.0))
+                self.stream_frame(cam_index)
+                time.sleep(0.2)
 
                 with lock:
-                    if (cam_index not in self._cameras
-                            or not self._cameras[cam_index].isOpened()):
-
-                        pass
-                    else:
-                        cap = self._cameras[cam_index]
+                    cap = self._cameras.get(cam_index)
+                    if cap and cap.isOpened():
                         ret, frame = cap.read()
                         if not ret or frame is None:
-                            raise RuntimeError("Doc frame that bai")
+                            raise RuntimeError("Doc frame that bai sau stream_frame")
                         _, buf = cv2.imencode(".jpg", frame,
                                              [cv2.IMWRITE_JPEG_QUALITY, 90])
                         return buf.tobytes()
-
-                with self._init_lock:
-                    with lock:
-                        if (cam_index not in self._cameras
-                                or not self._cameras[cam_index].isOpened()):
-                            self._cameras[cam_index] = self._open_cap(cam_index)
-                            self._warmup(self._cameras[cam_index])
-                    with lock:
-                        cap = self._cameras[cam_index]
-                        ret, frame = cap.read()
-                        if not ret or frame is None:
-                            raise RuntimeError("Doc frame that bai")
-                        _, buf = cv2.imencode(".jpg", frame,
-                                             [cv2.IMWRITE_JPEG_QUALITY, 90])
-                        return buf.tobytes()
+                raise RuntimeError(f"Camera {cam_index} van chua co trong pool sau stream_frame")
 
             except Exception as e:
                 logger.warning(f"Camera {cam_index} lan {attempt+1}: {e}")
@@ -335,21 +482,23 @@ class CameraManager:
                         try: self._cameras[cam_index].release()
                         except Exception: pass
                         del self._cameras[cam_index]
-                time.sleep(0.2)
+                time.sleep(0.3)
 
         logger.error(f"Camera {cam_index}: chup that bai sau {retries} lan")
         return None
 
     def warm_cameras(self, cam_indices: list):
         """Pre-open các camera ở chế độ KEEP khi khởi động – lần capture đầu sẽ nhanh.
-        Kiểm tra frame thực để loại bỏ camera "mở được nhưng không đọc được frame".
+        Chỉ warm USB integer cameras; RTSP cameras tự kết nối khi stream_frame được gọi.
         Dùng _init_lock để tuần tự hoá: tránh DSHOW/Windows bị quá tải khi mở 4 cam cùng lúc.
         Retry tối đa MAX_RETRIES lần với 2s nghỉ giữa mỗi lần.
         """
         if CAPTURE_MODE != "KEEP":
             return
         MAX_WARM_RETRIES = 3
-        for idx in sorted(cam_indices):
+        # Lọc chỉ USB integer cameras (RTSP strings tự kết nối khi cần)
+        int_indices = sorted(idx for idx in cam_indices if isinstance(idx, int))
+        for idx in int_indices:
             success = False
             for attempt in range(MAX_WARM_RETRIES):
                 cap = None
@@ -390,7 +539,9 @@ class CameraManager:
                     if attempt < MAX_WARM_RETRIES - 1:
                         time.sleep(2.0)
             if not success:
-                self._aliased_indices.add(idx)
+                # KHÔNG đánh dấu aliased: thất bại do DSHOW 3-slot limit
+                # (không phải lỗi physical aliasing). stream_frame sẽ mở cam
+                # này sau khi evict cam conflict.
                 logger.error(f"Camera {idx} warm thất bại sau {MAX_WARM_RETRIES} lần – sẽ hiển thị màn đen")
 
     def stream_frame(self, cam_index: int) -> Optional[bytes]:
@@ -400,7 +551,23 @@ class CameraManager:
         Slow path: camera chưa/đã hỏng → mở qua _init_lock (tuần tự,
           tránh MSMF bị quá tải khi 4 stream khởi động cùng lúc).
         Camera bị aliased (DSHOW wraparound) → trả None ngay (→ placeholder đen).
+        Camera không nằm trong danh sách cấu hình → trả None ngay (tránh evict core cameras).
         """
+        # ── RTSP/HTTP URL (string source) ────────────────────────────────────────
+        if isinstance(cam_index, str):
+            return self._stream_frame_rtsp(cam_index)
+
+        import config as _cfg
+        _configured = {
+            getattr(_cfg, 'ENTRY_PLATE_CAM', -1),
+            getattr(_cfg, 'ENTRY_FACE_CAM',  -1),
+            getattr(_cfg, 'EXIT_PLATE_CAM',  -1),
+            getattr(_cfg, 'EXIT_FACE_CAM',   -1),
+        }
+        # Lọc bỏ các giá trị string (RTSP) khỏi tập so sánh integer
+        _configured_int = {v for v in _configured if isinstance(v, int)}
+        if cam_index not in _configured_int:
+            return None
 
         if cam_index in self._aliased_indices:
             return None
@@ -443,16 +610,19 @@ class CameraManager:
                     # 4 cam cùng VID_1908&PID_3283 (chip generic UVC). DirectShow chỉ
                     # enumerate được 2 filter graph hợp lệ (cam 0 & 2); cam 1 & 3 alias
                     # → chỉ mở được khi cam đối xứng đã đóng. MSMF không hỗ trợ chip này.
-                    # Giải pháp: luân phiên 1 ↔ 3, giữ tối thiểu 6s mỗi cam.
+                    # Giải pháp: luân phiên cam conflict nhau, giữ tối thiểu 6s mỗi cam.
+                    # MAX_CAMS = 3 vì DSHOW chỉ có 3 filter graph slot.
+                    # CONFLICTS: cặp cam chia chung 1 DSHOW slot (thuộc tính phần cứng,
+                    # luôn là {1:3, 3:1} với 4 camera VID_1908&PID_3283 này).
                     HOLD_TIME = 6.0
                     CONFLICTS = {1: 3, 3: 1}
-                    MAX_CAMS  = 4
+                    MAX_CAMS  = 3
                     if len(self._cameras) >= MAX_CAMS:
                         _now = time.time()
                         conflict_idx = CONFLICTS.get(cam_index)
                         if conflict_idx is not None and conflict_idx in self._cameras:
                             # Phải evict cam conflict (alias) trước khi mở cam này
-                            held = _now - self._cam_open_time.get(conflict_idx, _now)
+                            held = _now - self._cam_open_time.get(conflict_idx, 0)
                             if held < HOLD_TIME:
                                 self._open_retry_after[cam_index] = _now + max(2.0, HOLD_TIME - held)
                                 return None
@@ -460,11 +630,11 @@ class CameraManager:
                         else:
                             evictable = [
                                 idx for idx in self._cameras
-                                if _now - self._cam_open_time.get(idx, _now) >= HOLD_TIME
+                                if _now - self._cam_open_time.get(idx, 0) >= HOLD_TIME
                             ]
                             if not evictable:
                                 wait_min = min(
-                                    HOLD_TIME - (_now - self._cam_open_time.get(idx, _now))
+                                    HOLD_TIME - (_now - self._cam_open_time.get(idx, 0))
                                     for idx in self._cameras
                                 )
                                 self._open_retry_after[cam_index] = _now + max(2.0, wait_min)
@@ -486,11 +656,19 @@ class CameraManager:
                                 pass
                             del self._cameras[evict_idx]
                         self._cam_open_time.pop(evict_idx, None)
+                        # Xoá fingerprint để cam bị evict không bị false-positive
+                        # aliasing khi compare với cam mới mở (cam 1 và cam 3 là
+                        # 2 camera VẬT LÝ khác nhau, chỉ chia chung DSHOW slot)
+                        self._cam_fingerprints.pop(evict_idx, None)
                         # Cho cam bị evict retry sau 2s
                         self._open_retry_after[evict_idx] = _now + 2.0
 
                     try:
-                        cap = self._open_cap(cam_index, stream_mode=True)
+                        # Mở ở capture mode (1280×720) thay vì stream mode (640×480).
+                        # stream_frame đã resize frame về STREAM_WIDTH×HEIGHT trước khi
+                        # trả về, nên web vẫn nhận 640×480. Nhưng _capture_keep đọc
+                        # từ cùng handle sẽ được ảnh 1280×720 → OCR chính xác hơn.
+                        cap = self._open_cap(cam_index, stream_mode=False)
                         self._warmup(cap)
 
                         ret_a, frame_a = cap.read()

@@ -63,7 +63,8 @@ class FaceRecognizer:
                 root=config.MODELS_DIR,
                 providers=["CPUExecutionProvider"]
             )
-            self._embedder.prepare(ctx_id=-1, det_size=(320, 320))
+            # det_size=640 phát hiện mặt xa/nhỏ tốt hơn (mặc định 320 bỏ sót mặt đứng xa camera)
+            self._embedder.prepare(ctx_id=-1, det_size=(640, 640))
 
             self._ready = True
             logger.info("InsightFace buffalo_sc loaded (det_500m + ArcFace w600k_mbf)")
@@ -97,7 +98,7 @@ class FaceRecognizer:
         """
         backend_url = getattr(config, 'BACKEND_URL', 'http://localhost:4000')
         api_key     = getattr(config, 'HARDWARE_API_KEY', '')
-        if not backend_url or 'localhost' in backend_url and not api_key:
+        if not backend_url or not api_key:
             logger.info("sync_from_backend: chạy local, bỏ qua sync")
             return 0
         try:
@@ -134,7 +135,7 @@ class FaceRecognizer:
         """
         backend_url = getattr(config, 'BACKEND_URL', 'http://localhost:4000')
         api_key     = getattr(config, 'HARDWARE_API_KEY', '')
-        if not backend_url or 'localhost' in backend_url:
+        if not backend_url or not api_key:
             return False
         with self._lock:
             snapshot = dict(self._known_embeddings)
@@ -176,8 +177,8 @@ class FaceRecognizer:
         backend_url = getattr(config, 'BACKEND_URL', 'http://localhost:4000')
         api_key     = getattr(config, 'HARDWARE_API_KEY', '')
 
-        # Nếu không có server thì đọc file local như cũ
-        if not backend_url or 'localhost' in backend_url:
+        # Chỉ chạy local khi hoàn toàn không có backend hoặc thiếu API key
+        if not backend_url or not api_key:
             return self.reload_known_faces()
 
         # ── BƯỚC 1: Thử đọc embeddings từ DB ──────────────────────────

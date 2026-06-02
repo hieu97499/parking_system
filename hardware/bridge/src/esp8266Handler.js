@@ -87,6 +87,15 @@ class Esp8266Handler extends EventEmitter {
     }
 
     if (msgPart === 'SENSOR:DETECTED') {
+      console.log(`[ESP8266] 🚗 ${gatePart.toUpperCase()} sensor DETECTED`);
+      // Nếu Arduino gửi SENSOR:DETECTED trước READY (firmware vừa boot), tự mark ready
+      if (gatePart === 'entry' && !this._entryReady) {
+        this._entryReady = true;
+        this.emit('connected', 'entry');
+      } else if (gatePart === 'exit' && !this._exitReady) {
+        this._exitReady = true;
+        this.emit('connected', 'exit');
+      }
       this.emit(`${gatePart}:detected`);
       return;
     }
@@ -107,6 +116,16 @@ class Esp8266Handler extends EventEmitter {
       }
       return;
     }
+
+    if (msgPart === 'OK:OPEN') {
+      console.log(`[ESP8266] ✅ Arduino ${gatePart} XÁC NHẬN MỞ barrier`);
+      return;
+    }
+
+    if (msgPart === 'OK:CLOSE') {
+      console.log(`[ESP8266] ✅ Arduino ${gatePart} XÁC NHẬN ĐÓNG barrier`);
+      return;
+    }
   }
 
   _send(msg) {
@@ -121,6 +140,18 @@ class Esp8266Handler extends EventEmitter {
   openBarrier(gate)  { this._send(`${gate.toUpperCase()}:OPEN`);  }
   closeBarrier(gate) { this._send(`${gate.toUpperCase()}:CLOSE`); }
   ping(gate)         { this._send(`${gate.toUpperCase()}:PING`);  }
+
+  // Gửi số chỗ trống tới OLED Entry Gate
+  sendSlots(count)   { this._send(`ENTRY:SLOTS:${count}`); }
+
+  // Gửi QR URL tới TFT Exit Gate
+  sendQR(url)        { this._send(`EXIT:QR:${url}`); }
+
+  // Gửi kết quả nhận diện tới TFT Exit Gate
+  // type: 'OK' hoặc 'FAIL' | plate: biển số | fee: phí (số)
+  sendStatus(type, plate, fee) {
+    this._send(`EXIT:INFO:${type}:${plate || ''}:${fee || 0}`);
+  }
 
   get entryReady() { return this._entryReady; }
   get exitReady()  { return this._exitReady;  }

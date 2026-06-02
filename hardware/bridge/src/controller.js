@@ -8,8 +8,9 @@ const cfg       = require('./config');
 
 const _lastTrigger = { entry: 0, exit: 0 };
 const _processing  = { entry: false, exit: false };
-
 const _barrierOpen = { entry: false, exit: false };
+
+let _lastKnownSlots = null;   // cache số chỗ trống mới nhất để gửi khi entry gate kết nối lại
 
 function _debounced(gate) {
   const now = Date.now();
@@ -53,16 +54,14 @@ async function handleEntry() {
     console.log('[ENTRY] Backend:', backendRes.message, '| allowed:', backendRes.allowed);
     ws.broadcast('SESSION_CREATED', { gate: 'entry', ...backendRes });
 
-    const hasPlate = aiResult.plate && aiResult.plate.length >= 2;
-    const hasFace  = aiResult.face_user_id != null;
-    if (!hasPlate || !hasFace) {
-      const missing = !hasPlate && !hasFace ? 'biển số và khuôn mặt'
-                    : !hasPlate            ? 'biển số'
-                    :                        'khuôn mặt';
-      console.warn(`[ENTRY] Thiếu ${missing} – giữ barrier đóng`);
-      ws.broadcast('ERROR', { gate: 'entry', message: `Không nhận diện được ${missing} – cần can thiệp thủ công` });
-      return;
+    // Cập nhật số chỗ trống lên OLED Entry Gate
+    if (backendRes.available_slots != null) {
+      _lastKnownSlots = backendRes.available_slots;
+      serial.sendSlots(_lastKnownSlots);
     }
+
+    // Backend là nơi duy nhất quyết định allowed – bao gồm:
+    // kiểm tra conf ngưỡng, biển số trong DB, khuôn mặt khớp chủ xe, ví đủ tiền, vé tháng.
     if (backendRes.allowed) {
       serial.openBarrier('entry');
       _barrierOpen.entry = true;
@@ -97,9 +96,32 @@ async function handleExit() {
     console.log('[EXIT] AI kết quả:', {
       plate: aiResult.plate,
       plate_conf: aiResult.plate_confidence,
+      face_user: aiResult.face_user_id,
+      face_conf:  aiResult.face_confidence,
       time_ms:    aiResult.processing_time_ms,
     });
     ws.broadcast('AI_RESULT', { gate: 'exit', ...aiResult });
+
+    // Kiểm tra trước khi tạo phiên ra (tránh trừ tiền oan khi mặt không khớp)
+    const hasPlate = aiResult.plate && aiResult.plate.length >= 2
+      && parseFloat(aiResult.plate_confidence || 0) >= parseFloat(process.env.PLATE_CONF_MIN || '0.45');
+    const hasFace  = aiResult.face_user_id != null
+      && parseFloat(aiResult.face_confidence  || 0) >= parseFloat(process.env.FACE_CONF_MIN  || '0.55');
+
+    if (!hasPlate || !hasFace) {
+      const reason = !hasPlate && !hasFace
+        ? 'Không nhận diện được biển số và khuôn mặt'
+        : !hasPlate
+          ? 'Không nhận diện được biển số'
+          : 'Khuôn mặt không khớp chủ xe';
+      console.warn(`[EXIT] ${reason} – giữ barrier đóng, KHÔNG trừ tiền`);
+      serial.sendStatus('FAIL', 'MAT KHONG KHOP', 0);
+      ws.broadcast('ERROR', {
+        gate: 'exit',
+        message: `${reason} – cần can thiệp thủ công`,
+      });
+      return;
+    }
 
     const backendRes = await backend.reportExit({
       plate:            aiResult.plate,
@@ -116,25 +138,24 @@ async function handleExit() {
       '| monthly_pass:', backendRes.monthly_pass);
     ws.broadcast('SESSION_CLOSED', { gate: 'exit', ...backendRes });
 
-    const hasPlate = aiResult.plate && aiResult.plate.length >= 2;
-    const hasFace  = aiResult.face_user_id != null;
-    if (!hasPlate || !hasFace) {
-      const missing = !hasPlate && !hasFace ? 'biển số và khuôn mặt'
-                    : !hasPlate            ? 'biển số'
-                    :                        'khuôn mặt';
-      console.warn(`[EXIT] Thiếu ${missing} – giữ barrier đóng`);
-      ws.broadcast('ERROR', {
-        gate: 'exit',
-        message: `Không nhận diện được ${missing} – cần can thiệp thủ công`,
-      });
-      return;
+    serial.sendStatus('OK', aiResult.plate || '', backendRes.fee || 0);
+
+    // Hiện QR mời dùng app trên TFT Exit Gate
+    serial.sendQR('https://baixethongminh.duckdns.org');
+
+    // Cập nhật số chỗ trống lên OLED Entry Gate
+    if (backendRes.available_slots != null) {
+      _lastKnownSlots = backendRes.available_slots;
+      serial.sendSlots(_lastKnownSlots);
     }
+
     serial.openBarrier('exit');
     _barrierOpen.exit = true;
     ws.broadcast('BARRIER_OPENED', { gate: 'exit' });
 
   } catch (err) {
     console.error('[EXIT] Lỗi nhận diện:', err.message);
+    serial.sendStatus('FAIL', 'LOI HE THONG', 0);
     ws.broadcast('ERROR', { gate: 'exit', message: `Nhận diện thất bại: ${err.message}` });
 
     console.warn('[EXIT] Barrier giữ đóng – chờ admin can thiệp thủ công hoặc xe rời đi');
@@ -166,6 +187,10 @@ function init() {
   serial.on('connected',    gate => {
     console.log(`[Serial] ${gate} gate kết nối`);
     ws.broadcast('DEVICE_CONNECTED', { gate });
+    // Gửi số chỗ trống hiện tại ngay khi entry gate kết nối/kết nối lại
+    if (gate === 'entry' && _lastKnownSlots !== null) {
+      serial.sendSlots(_lastKnownSlots);
+    }
   });
   serial.on('disconnected', gate => {
     console.warn(`[Serial] ${gate} gate mất kết nối`);
@@ -173,6 +198,22 @@ function init() {
   });
 
   ws.setController({ simulate });
+
+  // Poll slot count from backend mỗi 5s và gửi xuống entry gate OLED
+  const pollSlots = async () => {
+    try {
+      const s = await backend.fetchSlots();
+      if (s && typeof s.available_slots === 'number' && s.available_slots !== _lastKnownSlots) {
+        _lastKnownSlots = s.available_slots;
+        serial.sendSlots(_lastKnownSlots);
+        console.log(`[Slots] ${_lastKnownSlots} chỗ trống (poll backend)`);
+      }
+    } catch (err) {
+      // backend chưa sẵn sàng – im lặng
+    }
+  };
+  setInterval(pollSlots, 5000);
+  pollSlots();  // gọi ngay lần đầu
 }
 
 function simulate(gate) {

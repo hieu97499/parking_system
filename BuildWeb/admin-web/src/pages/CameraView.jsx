@@ -4,8 +4,10 @@ import { Video, VideoOff, RefreshCw, ExternalLink, Settings } from 'lucide-react
 const DEFAULT_BRIDGE = 'https://localhost:4002'
 
 const CAM_LABELS = [
-  { index: 0, label: 'Cổng VÀO – Biển số',   color: 'emerald' },
-  { index: 1, label: 'Cổng VÀO – Khuôn mặt', color: 'blue' },
+  { index: 0, label: 'Cổng VÀO – Biển số',    color: 'emerald' },
+  { index: 1, label: 'Cổng VÀO – Khuôn mặt',  color: 'blue' },
+  { index: 2, label: 'Cổng RA – Biển số',      color: 'orange' },
+  { index: 3, label: 'Cổng RA – Khuôn mặt',   color: 'purple' },
 ]
 
 const COLOR = {

@@ -1,12 +1,13 @@
 
 
-const https  = require('https');
 const http   = require('http');
+const https  = require('https');
 const path   = require('path');
 const fs     = require('fs');
 const { WebSocketServer } = require('ws');
-const cfg    = require('./config');
-const serial = require('./esp8266Handler');
+const cfg     = require('./config');
+const serial  = require('./esp8266Handler');
+const backend = require('./backendClient');
 
 let wss = null;
 let _controller = null;
@@ -14,16 +15,12 @@ let _controller = null;
 function setController(ctrl) { _controller = ctrl; }
 
 function start() {
-  const certPath = path.join(__dirname, '..', 'localhost.pem');
-  const keyPath  = path.join(__dirname, '..', 'localhost-key.pem');
-
-  const httpsServer = https.createServer({
-    cert: fs.readFileSync(certPath),
-    key:  fs.readFileSync(keyPath),
-  });
+  // HTTP thuần – không cần SSL cert, Operator Web chạy local http://localhost:5200
+  // nên không có mixed-content issue
+  const httpServer = http.createServer();
 
   // Handle HTTP requests: CORS preflight + MJPEG stream proxy
-  httpsServer.on('request', (req, res) => {
+  httpServer.on('request', (req, res) => {
     const origin = req.headers.origin || '*';
     const baseCors = {
       'Access-Control-Allow-Origin': origin,
@@ -40,7 +37,7 @@ function start() {
     }
 
     // MJPEG proxy: GET /stream/:camIndex → pipe từ AI Service
-    const streamMatch = req.url && req.url.match(/^\/stream\/(\d+)$/);
+    const streamMatch = req.url && req.url.match(/^\/stream\/(\d+)(?:[?#].*)?$/);
     if (streamMatch) {
       const camIndex = streamMatch[1];
       const aiBase   = (cfg.AI_SERVICE_URL || 'http://localhost:5001').replace(/\/$/, '');
@@ -93,18 +90,18 @@ function start() {
       return;
     }
 
-    // Trust-cert helper page: GET /
+    // Status page: GET /
     if (req.url === '/' || req.url === '') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end('<h2 style="font-family:sans-serif;padding:2rem">✅ Bridge SSL được tin cậy. Bạn có thể đóng tab này.</h2>');
+      res.end('<h2 style="font-family:sans-serif;padding:2rem">✅ Bridge đang hoạt động. Không cần trust SSL.</h2>');
       return;
     }
   });
 
-  wss = new WebSocketServer({ server: httpsServer });
-  httpsServer.listen(cfg.WS_PORT);
-  console.log(`[WS] WSS server lắng nghe cổng ${cfg.WS_PORT}`);
-  console.log(`[Stream] MJPEG proxy: https://localhost:${cfg.WS_PORT}/stream/0..3`);
+  wss = new WebSocketServer({ server: httpServer });
+  httpServer.listen(cfg.WS_PORT);
+  console.log(`[WS] WS server lắng nghe cổng ${cfg.WS_PORT}`);
+  console.log(`[Stream] MJPEG proxy: http://localhost:${cfg.WS_PORT}/stream/0..3`);
 
   wss.on('connection', (ws) => {
     console.log('[WS] Admin Web kết nối');
@@ -113,8 +110,26 @@ function start() {
     ws.on('message', raw => {
       try {
         const { type, gate } = JSON.parse(raw);
-        if (type === 'OPEN_BARRIER')  { if (gate) serial.openBarrier(gate); return; }
-        if (type === 'CLOSE_BARRIER') { if (gate) serial.closeBarrier(gate); return; }
+        if (type === 'OPEN_BARRIER') {
+          if (gate) serial.openBarrier(gate);
+          ws.send(JSON.stringify({ type: 'BARRIER_OPENED', data: { gate }, ts: Date.now() }));
+          backend.logManualEvent({
+            event_type:  'BARRIER_MANUAL_OPEN',
+            gate,
+            description: `Mở barrier thủ công – cổng ${gate === 'entry' ? 'vào' : 'ra'}`,
+          });
+          return;
+        }
+        if (type === 'CLOSE_BARRIER') {
+          if (gate) serial.closeBarrier(gate);
+          ws.send(JSON.stringify({ type: 'BARRIER_CLOSED', data: { gate }, ts: Date.now() }));
+          backend.logManualEvent({
+            event_type:  'BARRIER_MANUAL_CLOSE',
+            gate,
+            description: `Đóng barrier thủ công – cổng ${gate === 'entry' ? 'vào' : 'ra'}`,
+          });
+          return;
+        }
 
         if (type === 'SIMULATE_SENSOR') {
           const g = gate || 'entry';

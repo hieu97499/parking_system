@@ -32,7 +32,7 @@ router.post('/entry', hardwareAuth, async (req, res, next) => {
   try {
     await client.query('BEGIN');
 
-    const normalizedPlate = plate.trim().toUpperCase().replace(/\s+/g, '');
+    const normalizedPlate = plate.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 
     let lotId = null;
     if (devUUID) {
@@ -69,7 +69,7 @@ router.post('/entry', hardwareAuth, async (req, res, next) => {
        FROM vehicles v
        JOIN users u  ON u.user_id  = v.user_id
        JOIN wallets w ON w.user_id = v.user_id
-       WHERE v.license_plate = $1 AND v.is_active = true
+       WHERE UPPER(REGEXP_REPLACE(v.license_plate, '[^A-Z0-9]', '', 'g')) = $1 AND v.is_active = true
        LIMIT 1`,
       [normalizedPlate]
     );
@@ -142,6 +142,24 @@ router.post('/entry', hardwareAuth, async (req, res, next) => {
 
     await client.query('COMMIT');
 
+    // Đếm số chỗ trống sau khi xe vào
+    let available_slots = null;
+    if (lotId) {
+      const slotRes = await pool.query(
+        `SELECT pl.total_capacity AS capacity,
+                (SELECT COUNT(*) FROM parking_sessions ps2
+                 WHERE ps2.lot_id = pl.lot_id AND ps2.status = 'active') AS occupied
+         FROM parking_lots pl WHERE pl.lot_id = $1`,
+        [lotId]
+      );
+      if (slotRes.rows[0]) {
+        available_slots = Math.max(
+          0,
+          Number(slotRes.rows[0].capacity) - Number(slotRes.rows[0].occupied)
+        );
+      }
+    }
+
     const io = req.app.get('io');
     if (io) {
       io.emit('vehicle:entry', {
@@ -155,12 +173,13 @@ router.post('/entry', hardwareAuth, async (req, res, next) => {
     }
 
     res.json({
-      allowed:      true,
-      session_id:   sessionId,
-      session_kind: sessionKind,
-      user_info:    userInfo,
-      monthly_pass: !!monthlyPass,
-      message:      userId
+      allowed:         true,
+      session_id:      sessionId,
+      session_kind:    sessionKind,
+      user_info:       userInfo,
+      monthly_pass:    !!monthlyPass,
+      available_slots,
+      message:         userId
         ? `Chào mừng ${userInfo.full_name}!`
         : 'Khách vãng lai – phiên tạo thành công',
     });
@@ -189,7 +208,7 @@ router.post('/exit', hardwareAuth, async (req, res, next) => {
   try {
     await client.query('BEGIN');
 
-    const normalizedPlate = plate.trim().toUpperCase().replace(/\s+/g, '');
+    const normalizedPlate = plate.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 
     let session     = null;
     let sessionKind = null;
@@ -198,13 +217,13 @@ router.post('/exit', hardwareAuth, async (req, res, next) => {
 
       const mRes = await client.query(
         `SELECT ps.session_id, ps.entry_time, ps.user_id, ps.vehicle_id,
-                ps.license_plate, ps.session_type,
+                ps.license_plate, ps.session_type, ps.lot_id,
                 u.full_name, u.phone_number, w.wallet_id, w.balance,
                 'member' AS kind
          FROM parking_sessions ps
          JOIN users u  ON u.user_id  = ps.user_id
          JOIN wallets w ON w.user_id = ps.user_id
-         WHERE ps.license_plate = $1 AND ps.status = 'active'
+         WHERE UPPER(REGEXP_REPLACE(ps.license_plate, '[^A-Z0-9]', '', 'g')) = $1 AND ps.status = 'active'
          LIMIT 1`,
         [normalizedPlate]
       );
@@ -218,7 +237,7 @@ router.post('/exit', hardwareAuth, async (req, res, next) => {
           `SELECT session_id, entry_time, license_plate,
                   NULL::uuid AS user_id, 'guest' AS kind
            FROM guest_sessions
-           WHERE license_plate = $1 AND status = 'active'
+           WHERE UPPER(REGEXP_REPLACE(license_plate, '[^A-Z0-9]', '', 'g')) = $1 AND status = 'active'
            LIMIT 1`,
           [normalizedPlate]
         );
@@ -232,7 +251,7 @@ router.post('/exit', hardwareAuth, async (req, res, next) => {
     if (!session && face_user_id && face_confidence >= parseFloat(process.env.FACE_CONF_MIN || '0.55')) {
       const fRes = await client.query(
         `SELECT ps.session_id, ps.entry_time, ps.user_id, ps.vehicle_id,
-                ps.license_plate, ps.session_type,
+                ps.license_plate, ps.session_type, ps.lot_id,
                 u.full_name, u.phone_number, w.wallet_id, w.balance,
                 'member' AS kind
          FROM parking_sessions ps
@@ -305,17 +324,17 @@ router.post('/exit', hardwareAuth, async (req, res, next) => {
     }
 
     if (sessionKind === 'member' && fee > 0) {
+      // Cho phép số dư âm để tránh trường hợp xe ra miễn phí khi ví không đủ
+      // (ghi nợ – user có thể nạp tiền bù sau)
       const walletRes = await client.query(
         `UPDATE wallets SET balance = balance - $1, updated_at = NOW()
-         WHERE wallet_id = $2 AND balance >= $1
+         WHERE wallet_id = $2
          RETURNING balance`,
         [fee, session.wallet_id]
       );
 
       if (!walletRes.rows[0]) {
-
-        console.warn(`[hardware/exit] Ví không đủ – ghi nợ ${fee}đ user ${session.user_id}`);
-        fee = 0;
+        console.warn(`[hardware/exit] Không cập nhật được ví – wallet_id không tồn tại`);
       } else {
 
         await client.query(
@@ -360,6 +379,25 @@ router.post('/exit', hardwareAuth, async (req, res, next) => {
 
     await client.query('COMMIT');
 
+    // Đếm số chỗ trống sau khi xe ra
+    let available_slots_exit = null;
+    const exitLotId = session.lot_id ?? null;
+    if (exitLotId) {
+      const slotRes2 = await pool.query(
+        `SELECT pl.total_capacity AS capacity,
+                (SELECT COUNT(*) FROM parking_sessions ps2
+                 WHERE ps2.lot_id = pl.lot_id AND ps2.status = 'active') AS occupied
+         FROM parking_lots pl WHERE pl.lot_id = $1`,
+        [exitLotId]
+      );
+      if (slotRes2.rows[0]) {
+        available_slots_exit = Math.max(
+          0,
+          Number(slotRes2.rows[0].capacity) - Number(slotRes2.rows[0].occupied)
+        );
+      }
+    }
+
     const io = req.app.get('io');
     if (io) {
       io.emit('vehicle:exit', {
@@ -372,12 +410,13 @@ router.post('/exit', hardwareAuth, async (req, res, next) => {
     }
 
     res.json({
-      allowed:      true,
-      session_id:   session.session_id,
-      session_kind: sessionKind,
+      allowed:         true,
+      session_id:      session.session_id,
+      session_kind:    sessionKind,
       fee,
-      monthly_pass: hasMonthlyPassExit,
-      message:      hasMonthlyPassExit
+      monthly_pass:    hasMonthlyPassExit,
+      available_slots: available_slots_exit,
+      message:         hasMonthlyPassExit
         ? 'Vé tháng – miễn phí'
         : fee > 0
           ? `Phí: ${fee.toLocaleString('vi-VN')}đ`
@@ -472,7 +511,11 @@ router.post('/upload-image', hardwareAuth, (req, res, next) => {
 router.get('/faces/embeddings', hardwareAuth, async (req, res, next) => {
   try {
     const result = await pool.query(
-      'SELECT user_id, angle, embedding FROM face_embeddings ORDER BY user_id'
+      `SELECT ufi.user_id, ufi.angle, fe.embedding
+       FROM user_face_images ufi
+       JOIN face_embeddings fe ON fe.embedding_id = ufi.embedding_id
+       WHERE fe.is_active = true AND ufi.angle IS NOT NULL
+       ORDER BY ufi.user_id`
     );
     res.json({ embeddings: result.rows });
   } catch (err) { next(err); }
@@ -492,18 +535,40 @@ router.put('/faces/embeddings', hardwareAuth, async (req, res, next) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      let saved = 0;
       for (const { user_id, angle, embedding } of embeddings) {
         if (!user_id || !angle || !Array.isArray(embedding)) continue;
-        await client.query(
-          `INSERT INTO face_embeddings (user_id, angle, embedding, updated_at)
-           VALUES ($1, $2, $3::FLOAT8[], NOW())
-           ON CONFLICT (user_id, angle)
-           DO UPDATE SET embedding = EXCLUDED.embedding, updated_at = NOW()`,
-          [user_id, angle, embedding]
+
+        // Tìm hoặc tạo row trong face_embeddings, sau đó gắn embedding_id vào user_face_images theo (user_id, angle)
+        const ufiRes = await client.query(
+          'SELECT image_id, embedding_id FROM user_face_images WHERE user_id = $1 AND angle = $2',
+          [user_id, angle]
         );
+        if (ufiRes.rows.length === 0) continue;  // chưa có ảnh góc này
+        const { image_id, embedding_id } = ufiRes.rows[0];
+
+        if (embedding_id) {
+          await client.query(
+            `UPDATE face_embeddings SET embedding = $1::REAL[], updated_at = NOW()
+             WHERE embedding_id = $2`,
+            [embedding, embedding_id]
+          );
+        } else {
+          const newEmb = await client.query(
+            `INSERT INTO face_embeddings (user_id, embedding, is_active)
+             VALUES ($1, $2::REAL[], true) RETURNING embedding_id`,
+            [user_id, embedding]
+          );
+          await client.query(
+            `UPDATE user_face_images SET embedding_id = $1, status = 'processed', updated_at = NOW()
+             WHERE image_id = $2`,
+            [newEmb.rows[0].embedding_id, image_id]
+          );
+        }
+        saved++;
       }
       await client.query('COMMIT');
-      res.json({ saved: embeddings.length });
+      res.json({ saved });
     } catch (e) {
       await client.query('ROLLBACK');
       throw e;
@@ -539,6 +604,53 @@ router.get('/faces/download', hardwareAuth, (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// POST /api/hardware/manual-event – Operator Web ghi nhận thao tác thủ công
+router.post('/manual-event', hardwareAuth, async (req, res, next) => {
+  const {
+    event_type  = 'BARRIER_MANUAL_OPEN',
+    gate        = null,
+    description = '',
+    device_id   = null,
+  } = req.body;
+
+  const devUUID = device_id && /^[0-9a-f-]{36}$/i.test(String(device_id)) ? device_id : null;
+  const desc = description || `Thao tác thủ công: ${event_type} – cổng ${gate === 'entry' ? 'vào' : gate === 'exit' ? 'ra' : 'không rõ'}`;
+
+  try {
+    await pool.query(
+      `INSERT INTO event_logs (event_type, device_id, description)
+       VALUES ($1, $2, $3)`,
+      [event_type.toUpperCase(), devUUID, desc]
+    );
+
+    const io = req.app.get('io');
+    if (io) io.emit('hardware:manual_event', { event_type, gate, description: desc, ts: Date.now() });
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/slots', hardwareAuth, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT pl.lot_id, pl.total_capacity AS capacity,
+              (SELECT COUNT(*) FROM parking_sessions ps
+               WHERE ps.lot_id = pl.lot_id AND ps.status = 'active') AS occupied
+       FROM parking_lots pl ORDER BY pl.lot_id LIMIT 1`
+    );
+    if (!r.rows[0]) return res.json({ available_slots: 0, capacity: 0, occupied: 0 });
+    const capacity = Number(r.rows[0].capacity);
+    const occupied = Number(r.rows[0].occupied);
+    res.json({
+      available_slots: Math.max(0, capacity - occupied),
+      capacity,
+      occupied,
+    });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;

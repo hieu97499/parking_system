@@ -23,8 +23,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import re
+from typing import Union
+
 import httpx
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -115,13 +118,53 @@ def health():
 
 @app.get("/cameras")
 def list_cameras():
-    return {"cameras": camera.list_cameras()}
+    usb_cams = camera.list_cameras()
+    for c in usb_cams:
+        c["source_type"] = "usb"
+        c["source"] = c["index"]
+
+    # Thu thập các RTSP URL đã cấu hình (loại trùng)
+    rtsp_urls: dict[str, dict] = {}
+    for attr in ("ENTRY_PLATE_CAM", "ENTRY_FACE_CAM", "EXIT_PLATE_CAM", "EXIT_FACE_CAM"):
+        val = getattr(config, attr, None)
+        if isinstance(val, str) and val.lower().startswith(("rtsp", "http")):
+            if val not in rtsp_urls:
+                # Lấy kích thước từ pool nếu đã kết nối
+                with camera._get_cam_lock(val):
+                    cap = camera._cameras.get(val)
+                    if cap and cap.isOpened():
+                        import cv2 as _cv2
+                        w = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
+                        h = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
+                    else:
+                        w, h = 0, 0
+                m = re.search(r'@([\d.]+):', val)
+                ip = m.group(1) if m else re.search(r'://(.*?):', val.replace('rtsp://', '')).group(1) if '://' in val else val
+                rtsp_urls[val] = {
+                    "source": val,
+                    "source_type": "rtsp",
+                    "name": f"IP Cam {ip}",
+                    "width": w,
+                    "height": h,
+                }
+
+    import re as _re_local  # noqa – already imported at top level but ensure available
+    return {"cameras": usb_cams + list(rtsp_urls.values())}
 
 class CamAssignment(BaseModel):
-    entry_plate: int
-    entry_face:  int
-    exit_plate:  int
-    exit_face:   int
+    entry_plate: Union[int, str]
+    entry_face:  Union[int, str]
+    exit_plate:  Union[int, str]
+    exit_face:   Union[int, str]
+
+def _parse_cam_source(val):
+    """Chuyển giá trị assignment về đúng kiểu: int cho USB, str cho RTSP."""
+    if isinstance(val, int):
+        return val
+    try:
+        return int(str(val))
+    except (ValueError, TypeError):
+        return str(val)
 
 @app.get("/cameras/assignment")
 def get_cam_assignment():
@@ -167,22 +210,12 @@ def save_cam_assignment(payload: CamAssignment):
     with open(env_path, "w", encoding="utf-8") as f:
         f.writelines(new_lines)
 
-    config.ENTRY_PLATE_CAM = payload.entry_plate
-    config.ENTRY_FACE_CAM  = payload.entry_face
-    config.EXIT_PLATE_CAM  = payload.exit_plate
-    config.EXIT_FACE_CAM   = payload.exit_face
+    config.ENTRY_PLATE_CAM = _parse_cam_source(payload.entry_plate)
+    config.ENTRY_FACE_CAM  = _parse_cam_source(payload.entry_face)
+    config.EXIT_PLATE_CAM  = _parse_cam_source(payload.exit_plate)
+    config.EXIT_FACE_CAM   = _parse_cam_source(payload.exit_face)
 
     return {"ok": True, "assignment": updates}
-
-@app.get("/cameras/assignment")
-def get_cam_assignment():
-    """Trả về assignment hiện tại (index camera cho từng vai trò)."""
-    return {
-        "entry_plate": config.ENTRY_PLATE_CAM,
-        "entry_face":  config.ENTRY_FACE_CAM,
-        "exit_plate":  config.EXIT_PLATE_CAM,
-        "exit_face":   config.EXIT_FACE_CAM,
-    }
 
 @app.post("/capture/{cam_index}")
 async def capture_single(cam_index: int):
@@ -202,20 +235,17 @@ async def capture_single(cam_index: int):
         "image_b64": base64.b64encode(data).decode(),
     }
 
-def _mjpeg_generator(cam_index: int):
+def _mjpeg_generator(cam_source):
     """Generator liên tục yield MJPEG frames từ camera.
-    Dùng KEEP-pool của camera_manager – không mở VideoCapture riêng,
-    tránh xung đột 2 handle trên cùng 1 camera vật lý trên Windows.
-
-    Khi camera chưa sẵn sàng, yield placeholder JPEG đen để browser
-    KHÔNG bao giờ cắt kết nối – khi camera mở được sẽ tự hiển thị video thật.
+    cam_source: int (USB index) hoặc str (RTSP URL).
     """
     boundary = b"--frame"
 
-    time.sleep(cam_index * 1.5)
+    if isinstance(cam_source, int):
+        time.sleep(cam_source * 1.5)
     try:
         while True:
-            data = camera.stream_frame(cam_index)
+            data = camera.stream_frame(cam_source)
             if data:
                 fps_delay = 1.0 / getattr(config, "STREAM_FPS", 10)
             else:
@@ -231,11 +261,49 @@ def _mjpeg_generator(cam_index: int):
     except GeneratorExit:
         pass
 
+@app.get("/stream/preview")
+def stream_preview(src: str = Query(..., description="USB index (số) hoặc RTSP URL đã cấu hình")):
+    """MJPEG stream preview cho modal phân công – chấp nhận USB index hoặc RTSP URL đã cấu hình."""
+    configured = {
+        config.ENTRY_PLATE_CAM, config.ENTRY_FACE_CAM,
+        config.EXIT_PLATE_CAM,  config.EXIT_FACE_CAM,
+    }
+    try:
+        source = int(src)
+    except ValueError:
+        source = src
+    # Validate: chỉ cho phép nguồn đã cấu hình hoặc USB index 0-9
+    if source not in configured:
+        if not (isinstance(source, int) and 0 <= source <= 9):
+            raise HTTPException(status_code=403, detail="Nguồn camera không được phép")
+    return StreamingResponse(
+        _mjpeg_generator(source),
+        media_type="multipart/x-mixed-replace;boundary=frame",
+    )
+
 @app.get("/stream/{cam_index}")
 def stream_camera(cam_index: int):
-    """MJPEG stream liên tục từ camera chỉ định."""
+    """MJPEG stream liên tục từ camera theo USB index."""
     return StreamingResponse(
         _mjpeg_generator(cam_index),
+        media_type="multipart/x-mixed-replace;boundary=frame",
+    )
+
+_ROLE_MAP = {
+    "entry_plate": lambda: config.ENTRY_PLATE_CAM,
+    "entry_face":  lambda: config.ENTRY_FACE_CAM,
+    "exit_plate":  lambda: config.EXIT_PLATE_CAM,
+    "exit_face":   lambda: config.EXIT_FACE_CAM,
+}
+
+@app.get("/stream/role/{role}")
+def stream_role(role: str):
+    """MJPEG stream từ camera được gán cho vai trò (entry_plate, entry_face, ...)."""
+    if role not in _ROLE_MAP:
+        raise HTTPException(status_code=404, detail=f"Role '{role}' không hợp lệ")
+    source = _ROLE_MAP[role]()
+    return StreamingResponse(
+        _mjpeg_generator(source),
         media_type="multipart/x-mixed-replace;boundary=frame",
     )
 
@@ -350,7 +418,7 @@ async def process_entry():
         try:
             plate_img, plate_path = await asyncio.wait_for(
                 loop.run_in_executor(_executor, _capture_img_only, config.ENTRY_PLATE_CAM, "entry_plate"),
-                timeout=4.0)
+                timeout=12.0)
         except asyncio.TimeoutError:
             plate_img, plate_path = None, None
             logger.warning(f"ENTRY plate capture timeout – cam {config.ENTRY_PLATE_CAM} có thể bị hỏng")
@@ -360,7 +428,7 @@ async def process_entry():
         try:
             face_res = await asyncio.wait_for(
                 _run_face_with_retry(config.ENTRY_FACE_CAM, "entry_face"),
-                timeout=8.0)
+                timeout=20.0)
         except asyncio.TimeoutError:
             face_res = {"user_id": None, "confidence": 0.0, "face_image_path": None}
             logger.warning(f"ENTRY face recognition timeout – cam {config.ENTRY_FACE_CAM}")
@@ -368,7 +436,7 @@ async def process_entry():
         try:
             plate_res = await asyncio.wait_for(
                 _run_plate_with_retry(config.ENTRY_PLATE_CAM, "entry_plate", plate_img, plate_path),
-                timeout=8.0)
+                timeout=20.0)
         except asyncio.TimeoutError:
             plate_res = {"plate": "", "confidence": 0.0, "plate_image_path": plate_path}
             logger.warning(f"ENTRY plate recognition timeout – cam {config.ENTRY_PLATE_CAM}")
@@ -396,7 +464,7 @@ async def process_exit():
         try:
             plate_img, plate_path = await asyncio.wait_for(
                 loop.run_in_executor(_executor, _capture_img_only, config.EXIT_PLATE_CAM, "exit_plate"),
-                timeout=4.0)
+                timeout=12.0)
         except asyncio.TimeoutError:
             plate_img, plate_path = None, None
             logger.warning(f"EXIT plate capture timeout – cam {config.EXIT_PLATE_CAM} có thể bị hỏng")
@@ -406,7 +474,7 @@ async def process_exit():
         try:
             face_res = await asyncio.wait_for(
                 _run_face_with_retry(config.EXIT_FACE_CAM, "exit_face"),
-                timeout=8.0)
+                timeout=20.0)
         except asyncio.TimeoutError:
             face_res = {"user_id": None, "confidence": 0.0, "face_image_path": None}
             logger.warning(f"EXIT face recognition timeout – cam {config.EXIT_FACE_CAM}")
@@ -414,7 +482,7 @@ async def process_exit():
         try:
             plate_res = await asyncio.wait_for(
                 _run_plate_with_retry(config.EXIT_PLATE_CAM, "exit_plate", plate_img, plate_path),
-                timeout=8.0)
+                timeout=20.0)
         except asyncio.TimeoutError:
             plate_res = {"plate": "", "confidence": 0.0, "plate_image_path": plate_path}
             logger.warning(f"EXIT plate recognition timeout – cam {config.EXIT_PLATE_CAM}")
@@ -450,6 +518,22 @@ async def startup():
     face_ai.smart_sync()
     import asyncio
     loop = asyncio.get_event_loop()
+
+    # Auto-sync khuôn mặt định kỳ để bắt user mới đăng ký trên WebApp
+    sync_interval = getattr(config, "FACE_SYNC_INTERVAL", 60)
+    if sync_interval and sync_interval > 0:
+        import threading
+        def _face_autosync():
+            while True:
+                time.sleep(sync_interval)
+                try:
+                    n = face_ai.smart_sync()
+                    logger.debug(f"auto-sync: {n} user trong cache")
+                except Exception as e:
+                    logger.warning(f"auto-sync face thất bại: {e}")
+        threading.Thread(target=_face_autosync, daemon=True).start()
+        logger.info(f"Face auto-sync bật, mỗi {sync_interval}s")
+
     cam_indices = list({
         config.ENTRY_PLATE_CAM, config.ENTRY_FACE_CAM,
         config.EXIT_PLATE_CAM,  config.EXIT_FACE_CAM,
@@ -467,7 +551,9 @@ async def startup():
 
         import threading
         def _open_cameras_staggered():
-            for idx in cam_indices:
+            # Chỉ pre-open USB integer cameras; RTSP tự kết nối khi stream_frame được gọi
+            int_cams = sorted(idx for idx in cam_indices if isinstance(idx, int))
+            for idx in int_cams:
                 time.sleep(2.0)
                 try:
                     camera.stream_frame(idx)
