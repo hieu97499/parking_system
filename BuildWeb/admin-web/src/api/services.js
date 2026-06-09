@@ -76,3 +76,11 @@ export const barriersApi = {
   open: (deviceId, reason) => api.post(`/barriers/${deviceId}/open`, { reason }),
   logs: (deviceId) => api.get(`/barriers/logs${deviceId ? `?deviceId=${deviceId}` : ''}`),
 };
+
+export const adminsApi = {
+  getAll: () => api.get('/admins'),
+  create: (data) => api.post('/admins', data),
+  update: (id, data) => api.patch(`/admins/${id}`, data),
+  changePassword: (id, data) => api.post(`/admins/${id}/change-password`, data),
+  remove: (id) => api.delete(`/admins/${id}`),
+};

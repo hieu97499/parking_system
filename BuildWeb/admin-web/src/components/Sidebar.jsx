@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Car, Users, FileText,
-  BarChart2, AlertTriangle, Settings, LogOut, ParkingSquare,
+  BarChart2, AlertTriangle, Settings, LogOut, ParkingSquare, UserCog,
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import clsx from 'clsx'
@@ -69,13 +69,15 @@ export default function Sidebar() {
 
       {}
       <div className="px-3 py-4 border-t border-slate-700">
-        <div className="flex items-center gap-3 px-2 mb-3">
+        <div className="flex items-center gap-3 px-2 mb-3 cursor-pointer rounded-lg hover:bg-slate-800 p-2 transition-colors"
+          onClick={() => navigate('/admin-accounts')}
+          title="Quản lý tài khoản admin">
           <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-sm font-bold">
             {currentAdmin?.full_name?.[0] ?? 'A'}
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium truncate">{currentAdmin?.full_name}</div>
-            <div className="text-xs text-slate-400 capitalize">{currentAdmin?.role}</div>
+            <div className="text-xs text-slate-400 flex items-center gap-1"><UserCog size={10}/> {currentAdmin?.role === 'superadmin' ? 'Superadmin' : 'Admin'}</div>
           </div>
         </div>
         <button

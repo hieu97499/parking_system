@@ -63,6 +63,7 @@ app.use('/api/event-logs', require('./routes/eventLogs'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/alerts', require('./routes/alerts'));
 app.use('/api/config', require('./routes/config'));
+app.use('/api/admins', require('./routes/admins'));
 app.use('/api/barriers',  require('./routes/barriers'));
 app.use('/api/hardware',  require('./routes/hardware'));
 app.use('/api/ai',        require('./routes/aiProxy'));

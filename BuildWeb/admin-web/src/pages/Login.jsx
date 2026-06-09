@@ -112,11 +112,6 @@ export default function Login() {
             >
               {loading ? 'Đang đăng nhập...' : 'Đăng nhập'}
             </button>
-
-            <div className="text-center text-xs text-slate-500 rounded-lg p-3"
-              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>
-              Tài khoản demo: <strong className="text-slate-300">admin</strong> / <strong className="text-slate-300">Admin@123</strong>
-            </div>
           </form>
         </div>
       </div>
