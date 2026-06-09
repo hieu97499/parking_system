@@ -93,6 +93,16 @@ export const useStore = create((set, get) => ({
   lot: { ...mockLot },
   dashboardStats: null,
 
+  async updateLot(data) {
+    try {
+      const updated = await configApi.updateLot(data)
+      set(s => ({ lot: { ...s.lot, ...updated } }))
+      return true
+    } catch (err) {
+      throw err
+    }
+  },
+
   async fetchDashboardStats() {
     try {
       const stats = await dashboardApi.stats()

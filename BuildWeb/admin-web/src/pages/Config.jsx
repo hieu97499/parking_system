@@ -1,15 +1,52 @@
 import { useState } from 'react'
 import { useStore } from '../store/useStore'
-import { Pencil, X, Save, DollarSign, Building2 } from 'lucide-react'
+import { Pencil, X, Save, DollarSign, Building2, MapPin, Hash, Activity } from 'lucide-react'
 import clsx from 'clsx'
 
 const fmtVND = n => Number(n).toLocaleString('vi-VN') + 'đ'
 
 export default function Config() {
-  const { pricing, updatePricing, lot } = useStore()
+  const { pricing, updatePricing, lot, updateLot } = useStore()
   const [tab, setTab] = useState('pricing')
   const [editPricing, setEditPricing] = useState(null)
   const [priceDraft, setPriceDraft] = useState({})
+  const [editLot, setEditLot] = useState(false)
+  const [lotDraft, setLotDraft] = useState({})
+  const [lotSaving, setLotSaving] = useState(false)
+  const [lotMsg, setLotMsg] = useState(null)
+
+  const handleEditLot = () => {
+    setLotDraft({
+      name: lot.name || '',
+      address: lot.address || '',
+      total_capacity: lot.total_capacity || 0,
+      phone: lot.phone || '',
+      email: lot.email || '',
+    })
+    setEditLot(true)
+    setLotMsg(null)
+  }
+
+  const handleSaveLot = async () => {
+    setLotSaving(true)
+    setLotMsg(null)
+    try {
+      await updateLot({
+        name: lotDraft.name,
+        address: lotDraft.address,
+        total_capacity: Number(lotDraft.total_capacity),
+        phone: lotDraft.phone || null,
+        email: lotDraft.email || null,
+      })
+      setEditLot(false)
+      setLotMsg({ ok: true, text: 'Đã lưu thông tin bãi xe.' })
+      setTimeout(() => setLotMsg(null), 4000)
+    } catch {
+      setLotMsg({ ok: false, text: 'Lưu thất bại, thử lại sau.' })
+    } finally {
+      setLotSaving(false)
+    }
+  }
 
   const handleEditPrice = (p) => {
     setEditPricing(p.config_id)
@@ -141,24 +178,114 @@ export default function Config() {
         </div>
       )}
 
-      {}
       {tab === 'lot' && (
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-100">
+          <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
             <h2 className="font-semibold text-gray-800">Thông tin bãi xe</h2>
+            {!editLot && (
+              <button
+                onClick={handleEditLot}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-blue-600 hover:bg-blue-50 border border-blue-200 rounded-lg transition-colors"
+              >
+                <Pencil size={13}/> Chỉnh sửa
+              </button>
+            )}
           </div>
-          <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <LotRow label="Tên bãi xe"       value={lot.name} />
-            <LotRow label="Địa chỉ"           value={lot.address} />
-            <LotRow label="Tổng sức chứa"     value={`${lot.total_capacity} chỗ`} />
-            <LotRow label="Đang đỗ"           value={`${lot.current_occupancy} xe`} />
-            <LotRow label="Còn trống"         value={`${lot.total_capacity - lot.current_occupancy} chỗ`} />
-            <LotRow label="Trạng thái"        value={<span className="text-emerald-700 font-medium">Đang hoạt động</span>} />
-          </div>
+
+          {editLot ? (
+            <div className="p-5 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5">Tên bãi xe</label>
+                  <input
+                    value={lotDraft.name}
+                    onChange={e => setLotDraft(d => ({ ...d, name: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="VD: Bãi Xe Thông Minh – ĐH Hàng Hải"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5">Địa chỉ</label>
+                  <input
+                    value={lotDraft.address}
+                    onChange={e => setLotDraft(d => ({ ...d, address: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="VD: 484 Lạch Tray, Hải Phòng"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5">Tổng sức chứa (chỗ)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={lotDraft.total_capacity}
+                    onChange={e => setLotDraft(d => ({ ...d, total_capacity: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5">Số điện thoại <span className="text-gray-400">(tùy chọn)</span></label>
+                  <input
+                    value={lotDraft.phone}
+                    onChange={e => setLotDraft(d => ({ ...d, phone: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="VD: 0901234567"
+                  />
+                </div>
+              </div>
+              {lotMsg && (
+                <p className={clsx('text-sm', lotMsg.ok ? 'text-emerald-600' : 'text-rose-600')}>{lotMsg.text}</p>
+              )}
+              <div className="flex gap-3 pt-1">
+                <button
+                  onClick={handleSaveLot}
+                  disabled={lotSaving}
+                  className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50"
+                >
+                  <Save size={14}/> {lotSaving ? 'Đang lưu...' : 'Lưu thay đổi'}
+                </button>
+                <button
+                  onClick={() => setEditLot(false)}
+                  className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg"
+                >
+                  <X size={14} className="inline mr-1"/>Hủy
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="p-5">
+              {lotMsg?.ok && (
+                <div className="mb-4 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-sm text-emerald-700">
+                  ✓ {lotMsg.text}
+                </div>
+              )}
+              <div className="space-y-3">
+                <LotRow icon={<Building2 size={14}/>} label="Tên bãi xe" value={lot.name} />
+                <LotRow icon={<MapPin size={14}/>} label="Địa chỉ" value={lot.address} />
+                <LotRow icon={<Hash size={14}/>} label="Sức chứa" value={`${lot.total_capacity} chỗ`} />
+                <LotRow icon={<Activity size={14}/>} label="Trạng thái" value={
+                  <span className="inline-flex items-center gap-1.5 text-emerald-700 font-medium">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse inline-block"/>
+                    Đang hoạt động
+                  </span>
+                } />
+              </div>
+              <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-2 gap-3">
+                <div className="bg-gray-50 rounded-lg px-4 py-3 text-center">
+                  <div className="text-2xl font-bold text-gray-800">{lot.current_occupancy ?? 0}</div>
+                  <div className="text-xs text-gray-500 mt-0.5">xe đang đỗ</div>
+                </div>
+                <div className="bg-emerald-50 rounded-lg px-4 py-3 text-center">
+                  <div className="text-2xl font-bold text-emerald-700">{(lot.total_capacity ?? 0) - (lot.current_occupancy ?? 0)}</div>
+                  <div className="text-xs text-emerald-600 mt-0.5">chỗ còn trống</div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="px-5 pb-5">
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-700">
-              <strong>Lưu ý:</strong> Đếm chỗ trống được tính tự động bằng phần mềm (số xe vào trừ số xe ra).
-              Không cần phần cứng thêm.
+              <strong>Lưu ý:</strong> Đếm chỗ trống được tính tự động bằng phần mềm (số xe vào trừ số xe ra). Không cần phần cứng thêm.
             </div>
           </div>
         </div>
@@ -167,11 +294,14 @@ export default function Config() {
   )
 }
 
-function LotRow({ label, value }) {
+function LotRow({ icon, label, value }) {
   return (
-    <div className="bg-gray-50 rounded-lg p-4">
-      <div className="text-xs text-gray-500 mb-1">{label}</div>
-      <div className="text-sm font-medium text-gray-800">{value}</div>
+    <div className="flex items-start gap-3">
+      <div className="mt-0.5 text-gray-400">{icon}</div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs text-gray-500">{label}</div>
+        <div className="text-sm font-medium text-gray-800 mt-0.5">{value || <span className="text-gray-400 italic">Chưa cập nhật</span>}</div>
+      </div>
     </div>
   )
 }
