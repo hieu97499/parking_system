@@ -7,7 +7,7 @@ import {
   CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import {
-  ParkingSquare, Car, CheckCircle, BanknoteIcon, Clock, RefreshCw,
+  ParkingSquare, Car, CheckCircle, BanknoteIcon, Clock, RefreshCw, AlertTriangle,
 } from 'lucide-react'
 import clsx from 'clsx'
 
