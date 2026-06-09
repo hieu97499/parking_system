@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store/useStore'
-import { AlertTriangle, AlertCircle, Info, CheckCircle2, X, Filter } from 'lucide-react'
+import { AlertTriangle, AlertCircle, Info, CheckCircle2, X, Filter, RefreshCw, Wifi } from 'lucide-react'
 import clsx from 'clsx'
+import { api } from '../api/client'
 
 const SeverityCfg = {
   critical: { label:'Nghiêm trọng', Icon: AlertCircle,  bg:'bg-rose-50',  border:'border-rose-200',  badge:'bg-rose-100 text-rose-700',   dot:'bg-rose-500'   },
@@ -25,6 +26,8 @@ export default function Alerts() {
   const [resolveModal, setResolveModal] = useState(null)
   const [resolveNote, setResolveNote] = useState('')
   const [loading, setLoading] = useState(true)
+  const [scanning, setScanning] = useState(false)
+  const [scanMsg, setScanMsg] = useState(null)
 
   useEffect(() => {
     fetchAlerts().finally(() => setLoading(false))
@@ -48,6 +51,21 @@ export default function Alerts() {
     resolveAlert(resolveModal.alert_id, resolveNote)
     setResolveModal(null)
     setResolveNote('')
+  }
+
+  const handleScanDevices = async () => {
+    setScanning(true)
+    setScanMsg(null)
+    try {
+      const res = await api.post('/alerts/scan-devices')
+      setScanMsg({ ok: true, text: res.message })
+      await fetchAlerts()
+    } catch {
+      setScanMsg({ ok: false, text: 'Quét thất bại, thử lại sau.' })
+    } finally {
+      setScanning(false)
+      setTimeout(() => setScanMsg(null), 5000)
+    }
   }
 
   return (
@@ -78,7 +96,7 @@ export default function Alerts() {
       </div>
 
       {}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <Filter size={15} className="text-gray-400" />
         <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
           {[['unresolved','Chưa xử lý'],['critical','Nghiêm trọng'],['all','Tất cả']].map(([v,l]) => (
@@ -97,7 +115,29 @@ export default function Alerts() {
             </button>
           ))}
         </div>
-        <span className="ml-2 text-sm text-gray-500">{shown.length} cảnh báo</span>
+        <span className="text-sm text-gray-500">{shown.length} cảnh báo</span>
+
+        <div className="ml-auto flex items-center gap-2">
+          {scanMsg && (
+            <span className={clsx(
+              'text-xs px-3 py-1.5 rounded-lg font-medium',
+              scanMsg.ok ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+            )}>
+              {scanMsg.text}
+            </span>
+          )}
+          <button
+            onClick={handleScanDevices}
+            disabled={scanning}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {scanning
+              ? <RefreshCw size={14} className="animate-spin" />
+              : <Wifi size={14} />
+            }
+            {scanning ? 'Đang quét...' : 'Quét thiết bị'}
+          </button>
+        </div>
       </div>
 
       {}

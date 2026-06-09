@@ -57,6 +57,22 @@ router.patch('/:id/status', auth, async (req, res, next) => {
       VALUES ('DEVICE_STATUS_CHANGED', $1, $2, $3)
     `, [req.params.id, req.admin.id, note || `Trạng thái đổi thành ${status}`]);
 
+    // Nếu thiết bị về online → tự resolve cảnh báo offline chưa xử lý
+    if (status === 'online') {
+      await pool.query(`
+        UPDATE system_alerts
+        SET status = 'resolved',
+            resolved_at = NOW(),
+            resolution_note = $1
+        WHERE related_device_id = $2
+          AND alert_type IN ('device_offline', 'arduino_disconnected')
+          AND status = 'unresolved'
+      `, [
+        note ? `Đã xử lý: ${note}` : 'Thiết bị đã kết nối trở lại',
+        req.params.id,
+      ]);
+    }
+
     res.json(result.rows[0]);
   } catch (err) {
     next(err);

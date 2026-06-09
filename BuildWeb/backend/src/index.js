@@ -178,10 +178,82 @@ io.on('connection', (socket) => {
 
 app.set('io', io);
 
+// ── Device Offline Monitor ───────────────────────────────────────────────────
+// Mỗi 2 phút: quét thiết bị offline/error → tạo system_alerts nếu chưa có
+// Khi thiết bị về online → tự động resolve alert tương ứng
+const DEVICE_CHECK_INTERVAL_MS = 2 * 60 * 1000; // 2 phút
+const HEARTBEAT_TIMEOUT_MIN    = 5;              // thiết bị im lặng > 5 phút = offline
+
+async function checkOfflineDevices() {
+  try {
+    // 1. Tìm thiết bị không online HOẶC heartbeat quá cũ
+    const { rows: offlineDevices } = await pool.query(`
+      SELECT device_id, device_name, device_type, status, last_heartbeat, lot_id
+      FROM devices
+      WHERE status != 'online'
+         OR (
+           last_heartbeat IS NOT NULL
+           AND last_heartbeat < NOW() - INTERVAL '${HEARTBEAT_TIMEOUT_MIN} minutes'
+         )
+    `);
+
+    for (const device of offlineDevices) {
+      // Kiểm tra đã có cảnh báo chưa xử lý chưa
+      const { rows: existing } = await pool.query(`
+        SELECT alert_id FROM system_alerts
+        WHERE related_device_id = $1
+          AND alert_type IN ('device_offline', 'arduino_disconnected')
+          AND status = 'unresolved'
+        LIMIT 1
+      `, [device.device_id]);
+
+      if (existing.length > 0) continue; // đã có, bỏ qua
+
+      const isHeartbeatTimeout = device.status === 'online' && device.last_heartbeat;
+      const alertType = device.device_type === 'arduino' ? 'arduino_disconnected' : 'device_offline';
+      const title     = `${device.device_name} mất kết nối`;
+      const desc      = isHeartbeatTimeout
+        ? `Thiết bị không gửi tín hiệu trong hơn ${HEARTBEAT_TIMEOUT_MIN} phút. Lần cuối hoạt động: ${new Date(device.last_heartbeat).toLocaleString('vi-VN')}`
+        : `Trạng thái hiện tại: ${device.status}. Vui lòng kiểm tra kết nối thiết bị.`;
+
+      await pool.query(`
+        INSERT INTO system_alerts (lot_id, alert_type, severity, title, description, related_device_id)
+        VALUES ($1, $2, 'critical', $3, $4, $5)
+      `, [device.lot_id, alertType, title, desc, device.device_id]);
+
+      console.log(`[DeviceMonitor] Tạo cảnh báo: ${device.device_name} (${device.status})`);
+    }
+
+    // 2. Tự resolve các alert của thiết bị đã về online
+    const { rowCount } = await pool.query(`
+      UPDATE system_alerts sa
+      SET status = 'resolved',
+          resolved_at = NOW(),
+          resolution_note = 'Thiết bị đã kết nối trở lại (tự động)'
+      FROM devices d
+      WHERE sa.related_device_id = d.device_id
+        AND sa.alert_type IN ('device_offline', 'arduino_disconnected')
+        AND sa.status = 'unresolved'
+        AND d.status = 'online'
+        AND (d.last_heartbeat IS NULL OR d.last_heartbeat >= NOW() - INTERVAL '${HEARTBEAT_TIMEOUT_MIN} minutes')
+    `);
+    if (rowCount > 0) {
+      console.log(`[DeviceMonitor] Tự resolve ${rowCount} cảnh báo (thiết bị đã về online)`);
+    }
+  } catch (err) {
+    console.error('[DeviceMonitor] Lỗi kiểm tra thiết bị:', err.message);
+  }
+}
+
 const PORT = parseInt(process.env.PORT) || 4000;
 httpServer.listen(PORT, async () => {
   console.log(`\n🚀 Backend API đang chạy tại http://localhost:${PORT}`);
   console.log(`   Admin web (CORS): ${process.env.CORS_ORIGIN || 'http://localhost:3000'}`);
   console.log(`   User web  (CORS): ${process.env.CORS_USER_ORIGIN || 'http://localhost:5175'}`);
   await testConnection();
+
+  // Chạy lần đầu ngay khi khởi động, sau đó lặp định kỳ
+  await checkOfflineDevices();
+  setInterval(checkOfflineDevices, DEVICE_CHECK_INTERVAL_MS);
+  console.log(`[DeviceMonitor] Đã bắt đầu giám sát thiết bị (mỗi ${DEVICE_CHECK_INTERVAL_MS / 60000} phút)`);
 });
